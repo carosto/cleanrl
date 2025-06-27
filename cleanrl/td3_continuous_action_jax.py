@@ -73,15 +73,14 @@ class Args:
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
+    # Enviroment specific arguments
+    gnn_model_path: str = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
+    """the path to the GNN model checkpoint"""
+    data_path: str = '/shared_data/Pouring_mpc_1D_1902/'
+    """the path to the dataset for the GNN model"""
 
-def make_env(env_id, seed, idx, capture_video, run_name):
-    gnn_model_path = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
-    data_path = '/shared_data/Pouring_mpc_1D_1902/'
-    
-    env_kwargs = {
-        "gnn_model_path": gnn_model_path,
-        "data_path": data_path,
-        }
+
+def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
@@ -271,8 +270,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     key = jax.random.PRNGKey(args.seed)
     key, actor_key, qf1_key, qf2_key = jax.random.split(key, 4)
 
+    env_kwargs = {
+        "gnn_model_path": args.gnn_model_path,
+        "data_path": args.data_path,
+        }
+
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     max_action = float(envs.single_action_space.high[0])
@@ -493,6 +497,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             run_name=f"{run_name}-eval",
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
+            env_kwargs=env_kwargs
         )
         for idx, episodic_return in enumerate(episodic_returns):
             writer.add_scalar("eval/episodic_return", episodic_return, idx)

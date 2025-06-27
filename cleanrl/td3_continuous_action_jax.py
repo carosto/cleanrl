@@ -1,8 +1,17 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/td3/#td3_continuous_action_jaxpy
 import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
 import random
 import time
 from dataclasses import dataclass
+import sys
+
+"""# Add the parent directory (root) to the Python path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))"""
+
+import gymnasium as gym
+import learning_to_simulate_pouring.register_env  # this triggers the registration
+
 
 import flax
 import flax.linen as nn
@@ -66,12 +75,21 @@ class Args:
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
+    gnn_model_path = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
+    data_path = '/shared_data/Pouring_mpc_1D_1902/'
+    
+    env_kwargs = {
+        "gnn_model_path": gnn_model_path,
+        "data_path": data_path,
+        }
     def thunk():
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
+            env.reset(seed=seed + idx)
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(env_id, **env_kwargs)
+            env.reset(seed=seed + idx)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
         return env
@@ -80,7 +98,112 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 
 # ALGO LOGIC: initialize agent here:
+"""# networks for reduced observations
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray  # shape: (action_dim,)
+    action_bias: jnp.ndarray   # shape: (action_dim,)
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(512)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.leaky_relu(x, negative_slope=0.2)
+
+        x = nn.Dense(256)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.leaky_relu(x, negative_slope=0.2)
+
+        x = nn.Dense(128)(x)
+        x = nn.leaky_relu(x, negative_slope=0.2)
+
+        x = nn.Dense(self.action_dim)(x)
+        x = nn.tanh(x)  # constrain to [-1, 1]
+
+        # Rescale to [action_low, action_high]
+        return x * self.action_scale + self.action_bias
+    
 class QNetwork(nn.Module):
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, a: jnp.ndarray):
+        x = jnp.concatenate([x, a], axis=-1)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x"""
+
+
+# networks for full state
+# JugEncoder and ParticleEncoder are shared between actor and critic.
+class JugEncoder(nn.Module):
+    @nn.compact
+    def __call__(self, jug_obs):
+        # jug_obs shape: (batch, 19)
+        x = nn.Dense(64)(jug_obs)
+        x = nn.relu(x)
+        x = nn.Dense(64)(x)
+        x = nn.relu(x)
+        return x  # (batch, 64)
+
+class ParticleEncoder(nn.Module):
+    @nn.compact
+    def __call__(self, particles):  # particles shape: (batch, 1048, 128)
+        x = nn.Dense(64)(particles)       # (batch, 1048, 64)
+        x = nn.relu(x)
+        x = nn.Dense(64)(x)               # (batch, 1048, 64)
+        x = nn.relu(x)
+        x = jnp.mean(x, axis=1)           # mean pool over particles → (batch, 64)
+        return x
+    
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray
+    action_bias: jnp.ndarray
+
+    @nn.compact
+    def __call__(self, flat_obs):
+        # Split flat observation
+        jug_obs = flat_obs[:, :18]
+        particle_flat = flat_obs[:, 18:]
+        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        liquid_emb = ParticleEncoder()(particles)
+
+        # Combine and pass through actor MLP
+        x = jnp.concatenate([jug_emb, liquid_emb], axis=-1)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.action_dim)(x)
+        x = nn.tanh(x)
+        return x * self.action_scale + self.action_bias
+
+class QNetwork(nn.Module):
+    @nn.compact
+    def __call__(self, flat_obs, action):
+        # Split flat observation
+        jug_obs = flat_obs[:, :18]
+        particle_flat = flat_obs[:, 18:]
+        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        liquid_emb = ParticleEncoder()(particles)
+
+        # Combine with action
+        x = jnp.concatenate([jug_emb, liquid_emb, action], axis=-1)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x
+"""class QNetwork(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, a: jnp.ndarray):
         x = jnp.concatenate([x, a], -1)
@@ -106,7 +229,7 @@ class Actor(nn.Module):
         x = nn.Dense(self.action_dim)(x)
         x = nn.tanh(x)
         x = x * self.action_scale + self.action_bias
-        return x
+        return x"""
 
 
 class TrainState(TrainState):
@@ -262,6 +385,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     start_time = time.time()
     for global_step in range(args.total_timesteps):
+        start_time_step = time.time()
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
@@ -276,22 +400,38 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 ]
             )
 
+        # CHANGED: original version used final_info to detect done which was removed in gymnasium 1.0.0
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
-                writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                break
+        # Handle both single and multiple environments
+        is_vectorized = isinstance(infos, (list, tuple))  # True if infos is a list
 
-        # TRY NOT TO MODIFY: save data to replay buffer; handle `final_observation`
+        # TRY NOT TO MODIFY: record rewards for plotting purposes
+        if is_vectorized:
+            for i, (terminated, truncated) in enumerate(zip(terminations, truncations)):
+                if (terminated or truncated) and "episode" in infos[i]:
+                    print(f"global_step={global_step}, episodic_return={infos[i]['episode']['r']}")
+                    writer.add_scalar("charts/episodic_return", infos[i]['episode']['r'], global_step)
+                    writer.add_scalar("charts/episodic_length", infos[i]['episode']['l'], global_step)
+                    writer.add_scalar("charts/fill_level", infos[i]['current_fill_level'], global_step)
+                    break # only log the first finished episode for consistency
+        else:
+            if (terminations or truncations) and "episode" in infos:
+                print(f"global_step={global_step}, episodic_return={infos['episode']['r']}")
+                writer.add_scalar("charts/episodic_return", infos["episode"]["r"], global_step)
+                writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
+                writer.add_scalar("charts/fill_level", infos['current_fill_level'], global_step)
+
+        # TRY NOT TO MODIFY: save data to replay buffer
         real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
+        if is_vectorized:
+            for idx, trunc in enumerate(truncations):
+                if trunc and "terminal_observation" in infos[idx]:
+                    real_next_obs[idx] = infos[idx]["terminal_observation"]
+        else:
+            if truncations and "terminal_observation" in infos:
+                real_next_obs[0] = infos["terminal_observation"]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
@@ -300,7 +440,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             data = rb.sample(args.batch_size)
-
             (qf1_state, qf2_state), (qf1_loss_value, qf2_loss_value), (qf1_a_values, qf2_a_values), key = update_critic(
                 actor_state,
                 qf1_state,
@@ -329,6 +468,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/actor_loss", actor_loss_value.item(), global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                writer.add_scalar("charts/step_time", time.time() - start_time_step, global_step)
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"

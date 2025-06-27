@@ -1,3 +1,6 @@
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+
 from typing import Callable
 
 import flax
@@ -5,7 +8,6 @@ import flax.linen as nn
 import gymnasium as gym
 import jax
 import numpy as np
-
 
 def evaluate(
     model_path: str,
@@ -45,6 +47,10 @@ def evaluate(
     qf.apply = jax.jit(qf.apply)
 
     episodic_returns = []
+    rewards_per_episode = []
+    fill_levels_per_episode = []
+
+    os.makedirs(f"saved_rewards/{run_name}", exist_ok=True)
     while len(episodic_returns) < eval_episodes:
         actions = actor.apply(actor_params, obs)
         actions = np.array(
@@ -56,32 +62,49 @@ def evaluate(
             ]
         )
 
-        next_obs, _, _, _, infos = envs.step(actions)
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                if "episode" not in info:
-                    continue
-                print(f"eval_episode={len(episodic_returns)}, episodic_return={info['episode']['r']}")
-                episodic_returns += [info["episode"]["r"]]
+        # CHANGED: original version used final_info to detect done which was removed in gymnasium 1.0.0
+        next_obs, rewards, terminated, truncated, infos = envs.step(actions)
+        rewards_per_episode.append(rewards[0]) # currently works for only one environment in the SyncVectorEnv
+        fill_levels_per_episode.append(infos['current_fill_level'][0]) # currently works for only one environment in the SyncVectorEnv
+
+        dones = terminated | truncated
+
+        # Support both single and multiple environments
+        if isinstance(infos, dict):  # Single environment
+            if (terminated or truncated) and "episode" in infos:
+                np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
+                np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                print(f"eval_episode={len(episodic_returns)}, episodic_return={infos['episode']['r']}")
+                episodic_returns.append(infos["episode"]["r"])
+                rewards_per_episode = []
+                fill_levels_per_episode = []
+        else:  # Vectorized environment
+            for i, done in enumerate(dones):
+                if done and "episode" in infos[i]:
+                    np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
+                    np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                    print(f"eval_episode={len(episodic_returns)}, episodic_return={infos[i]['episode']['r']}")
+                    episodic_returns.append(infos[i]['episode']['r'])
+                    rewards_per_episode = []
+                    fill_levels_per_episode = []
+
         obs = next_obs
 
     return episodic_returns
 
 
 if __name__ == "__main__":
-    from huggingface_hub import hf_hub_download
-
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
 
-    model_path = hf_hub_download(
-        repo_id="cleanrl/HalfCheetah-v4-td3_continuous_action_jax-seed1", filename="td3_continuous_action_jax.cleanrl_model"
-    )
+    run_nr = 1750411979
+    run_name= f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
+    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/runs", run_name, "td3_continuous_action_jax.cleanrl_model")      
     evaluate(
         model_path,
         make_env,
-        "HalfCheetah-v4",
+        "PouringEnv-v0",
         eval_episodes=10,
-        run_name=f"eval",
+        run_name=f"{run_nr}_eval",
         Model=(Actor, QNetwork),
         exploration_noise=0.1,
     )

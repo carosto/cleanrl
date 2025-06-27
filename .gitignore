@@ -129,3 +129,6 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# other folders 
+**/saved_rewards/

@@ -49,6 +49,8 @@ class Args:
     """whether to upload the saved model to huggingface"""
     hf_entity: str = ""
     """the user or org name of the model repository from the Hugging Face Hub"""
+    output_dir: str = "outputs/"
+    """path for the output directory"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -94,7 +96,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
             env.reset(seed=seed + idx)
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            env = gym.wrappers.RecordVideo(env, video_folder)
         else:
             env = gym.make(env_id, **env_kwargs)
             env.reset(seed=seed + idx)
@@ -258,6 +260,7 @@ if __name__ == "__main__":
         cross_rank=0,
         cross_size=1,
     )
+
     import stable_baselines3 as sb3
 
     if sb3.__version__ < "2.0":
@@ -280,7 +283,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+
+    runs_folder = os.path.abspath(f"{args.output_dir}/runs/{run_name}")
+    video_folder = os.path.abspath(f"{args.output_dir}/videos/{run_name}")
+
+    writer = SummaryWriter(runs_folder)
+
+    print(f"TensorBoard logs will be saved to: {runs_folder}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s"
@@ -482,15 +491,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                         )
                         core_context.train.report_training_metrics(
                             steps_completed=global_step,
-                            metrics={"episodic_return": infos[i]["episode"]["r"]},
+                            metrics={
+                                "episodic_return": float(infos[i]["episode"]["r"])
+                            },
                         )
                         core_context.train.report_training_metrics(
                             steps_completed=global_step,
-                            metrics={"episodic_length": infos[i]["episode"]["l"]},
+                            metrics={"episodic_length": int(infos[i]["episode"]["l"])},
                         )
                         core_context.train.report_training_metrics(
                             steps_completed=global_step,
-                            metrics={"fill_level": infos[i]["current_fill_level"]},
+                            metrics={
+                                "fill_level": float(infos[i]["current_fill_level"])
+                            },
                         )
                         writer.add_scalar(
                             "charts/episodic_return",
@@ -515,15 +528,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"episodic_return": infos["episode"]["r"]},
+                        metrics={"episodic_return": float(infos["episode"]["r"])},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"episodic_length": infos["episode"]["l"]},
+                        metrics={"episodic_length": int(infos["episode"]["l"])},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"fill_level": infos["current_fill_level"]},
+                        metrics={"fill_level": float(infos["current_fill_level"])},
                     )
                     writer.add_scalar(
                         "charts/episodic_return", infos["episode"]["r"], global_step
@@ -582,23 +595,23 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 if global_step % 100 == 0:
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf1_loss": qf1_loss_value.item()},
+                        metrics={"qf1_loss": float(qf1_loss_value.item())},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf2_loss": qf2_loss_value.item()},
+                        metrics={"qf2_loss": float(qf2_loss_value.item())},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf1_values": qf1_a_values.item()},
+                        metrics={"qf1_values": float(qf1_a_values.item())},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf2_values": qf2_a_values.item()},
+                        metrics={"qf2_values": float(qf2_a_values.item())},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"actor_loss": actor_loss_value.item()},
+                        metrics={"actor_loss": float(actor_loss_value.item())},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
@@ -634,7 +647,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     )
 
     if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+        model_path = f"{runs_folder}/{args.exp_name}.cleanrl_model"
         with open(model_path, "wb") as f:
             f.write(
                 flax.serialization.to_bytes(
@@ -660,7 +673,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         )
         for idx, episodic_return in enumerate(episodic_returns):
             core_context.train.report_training_metrics(
-                steps_completed=idx, metrics={"eval_episodic_return": episodic_return}
+                steps_completed=idx,
+                metrics={"eval_episodic_return": float(episodic_return)},
             )
             writer.add_scalar("eval/episodic_return", episodic_return, idx)
 
@@ -674,8 +688,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 episodic_returns,
                 repo_id,
                 "TD3",
-                f"runs/{run_name}",
-                f"videos/{run_name}-eval",
+                f"{runs_folder}",
+                f"{video_folder}-eval",
             )
 
     envs.close()

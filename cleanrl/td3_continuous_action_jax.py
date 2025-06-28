@@ -46,6 +46,8 @@ class Args:
     """whether to upload the saved model to huggingface"""
     hf_entity: str = ""
     """the user or org name of the model repository from the Hugging Face Hub"""
+    output_dir: str = "outputs/"
+    """path for the output directory"""
 
     # Algorithm specific arguments
     env_id: str = "Hopper-v4"
@@ -78,6 +80,10 @@ class Args:
     """the path to the GNN model checkpoint"""
     data_path: str = '/shared_data/Pouring_mpc_1D_1902/'
     """the path to the dataset for the GNN model"""
+    target_particles_path: str = (
+        "/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/particle_states/saved_particles_final_state.npz"
+    )
+    """path to the target particles for the environment (required for chamfer loss)"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
@@ -85,7 +91,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
             env.reset(seed=seed + idx)
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+            env = gym.wrappers.RecordVideo(env, video_folder)
         else:
             env = gym.make(env_id, **env_kwargs)
             env.reset(seed=seed + idx)
@@ -258,7 +264,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f"runs/{run_name}")
+
+    runs_folder = os.path.abspath(f"{args.output_dir}/runs/{run_name}")
+    video_folder = os.path.abspath(f"{args.output_dir}/videos/{run_name}")
+
+    writer = SummaryWriter(runs_folder)
+    print(f"TensorBoard logs will be saved to: {runs_folder}")
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -273,6 +284,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     env_kwargs = {
         "gnn_model_path": args.gnn_model_path,
         "data_path": args.data_path,
+        "target_particles_path": args.target_particles_path,
         }
 
     # env setup
@@ -475,7 +487,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("charts/step_time", time.time() - start_time_step, global_step)
 
     if args.save_model:
-        model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
+        model_path = f"{runs_folder}/{args.exp_name}.cleanrl_model"
         with open(model_path, "wb") as f:
             f.write(
                 flax.serialization.to_bytes(
@@ -507,7 +519,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "TD3", f"runs/{run_name}", f"videos/{run_name}-eval")
+            push_to_hub(args, episodic_returns, repo_id, "TD3", f"{runs_folder}", f"{video_folder}-eval",)
 
     envs.close()
     writer.close()

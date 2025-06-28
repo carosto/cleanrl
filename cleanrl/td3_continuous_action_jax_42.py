@@ -1,6 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/td3/#td3_continuous_action_jaxpy
 import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 import random
 import time
 from dataclasses import dataclass
@@ -76,10 +77,16 @@ class Args:
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
     # Enviroment specific arguments
-    gnn_model_path: str = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
+    gnn_model_path: str = (
+        "/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl"
+    )
     """the path to the GNN model checkpoint"""
-    data_path: str = '/shared_data/Pouring_mpc_1D_1902/'
+    data_path: str = "/shared_data/Pouring_mpc_1D_1902/"
     """the path to the dataset for the GNN model"""
+    target_particles_path: str = (
+        "/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/particle_states/saved_particles_final_state.npz"
+    )
+    """path to the target particles for the environment (required for chamfer loss)"""
 
 
 def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
@@ -148,16 +155,18 @@ class JugEncoder(nn.Module):
         x = nn.relu(x)
         return x  # (batch, 64)
 
+
 class ParticleEncoder(nn.Module):
     @nn.compact
     def __call__(self, particles):  # particles shape: (batch, 1048, 128)
-        x = nn.Dense(64)(particles)       # (batch, 1048, 64)
+        x = nn.Dense(64)(particles)  # (batch, 1048, 64)
         x = nn.relu(x)
-        x = nn.Dense(64)(x)               # (batch, 1048, 64)
+        x = nn.Dense(64)(x)  # (batch, 1048, 64)
         x = nn.relu(x)
-        x = jnp.mean(x, axis=1)           # mean pool over particles → (batch, 64)
+        x = jnp.mean(x, axis=1)  # mean pool over particles → (batch, 64)
         return x
-    
+
+
 class Actor(nn.Module):
     action_dim: int
     action_scale: jnp.ndarray
@@ -184,6 +193,7 @@ class Actor(nn.Module):
         x = nn.tanh(x)
         return x * self.action_scale + self.action_bias
 
+
 class QNetwork(nn.Module):
     @nn.compact
     def __call__(self, flat_obs, action):
@@ -204,6 +214,8 @@ class QNetwork(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(1)(x)
         return x
+
+
 """class QNetwork(nn.Module):
     @nn.compact
     def __call__(self, x: jnp.ndarray, a: jnp.ndarray):
@@ -238,14 +250,14 @@ class TrainState(TrainState):
 
 
 if __name__ == "__main__":
-    distributed = det.core.DistributedContext( #required for logging
-                rank=0,
-                size=1,
-                local_rank=0,
-                local_size=1,
-                cross_rank=0,
-                cross_size=1,
-                )
+    distributed = det.core.DistributedContext(  # required for logging
+        rank=0,
+        size=1,
+        local_rank=0,
+        local_size=1,
+        cross_rank=0,
+        cross_size=1,
+    )
     import stable_baselines3 as sb3
 
     if sb3.__version__ < "2.0":
@@ -271,7 +283,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
     # TRY NOT TO MODIFY: seeding
@@ -283,11 +296,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     env_kwargs = {
         "gnn_model_path": args.gnn_model_path,
         "data_path": args.data_path,
-        }
+        "target_particles_path": args.target_particles_path,
+    }
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs)])
-    assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
+    envs = gym.vector.SyncVectorEnv(
+        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs)]
+    )
+    assert isinstance(
+        envs.single_action_space, gym.spaces.Box
+    ), "only continuous action space is supported"
 
     max_action = float(envs.single_action_space.high[0])
     envs.single_observation_space.dtype = np.float32
@@ -357,21 +375,36 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             envs.single_action_space.low,
             envs.single_action_space.high,
         )
-        qf1_next_target = qf.apply(qf1_state.target_params, next_observations, next_state_actions).reshape(-1)
-        qf2_next_target = qf.apply(qf2_state.target_params, next_observations, next_state_actions).reshape(-1)
+        qf1_next_target = qf.apply(
+            qf1_state.target_params, next_observations, next_state_actions
+        ).reshape(-1)
+        qf2_next_target = qf.apply(
+            qf2_state.target_params, next_observations, next_state_actions
+        ).reshape(-1)
         min_qf_next_target = jnp.minimum(qf1_next_target, qf2_next_target)
-        next_q_value = (rewards + (1 - terminations) * args.gamma * (min_qf_next_target)).reshape(-1)
+        next_q_value = (
+            rewards + (1 - terminations) * args.gamma * (min_qf_next_target)
+        ).reshape(-1)
 
         def mse_loss(params):
             qf_a_values = qf.apply(params, observations, actions).squeeze()
             return ((qf_a_values - next_q_value) ** 2).mean(), qf_a_values.mean()
 
-        (qf1_loss_value, qf1_a_values), grads1 = jax.value_and_grad(mse_loss, has_aux=True)(qf1_state.params)
-        (qf2_loss_value, qf2_a_values), grads2 = jax.value_and_grad(mse_loss, has_aux=True)(qf2_state.params)
+        (qf1_loss_value, qf1_a_values), grads1 = jax.value_and_grad(
+            mse_loss, has_aux=True
+        )(qf1_state.params)
+        (qf2_loss_value, qf2_a_values), grads2 = jax.value_and_grad(
+            mse_loss, has_aux=True
+        )(qf2_state.params)
         qf1_state = qf1_state.apply_gradients(grads=grads1)
         qf2_state = qf2_state.apply_gradients(grads=grads2)
 
-        return (qf1_state, qf2_state), (qf1_loss_value, qf2_loss_value), (qf1_a_values, qf2_a_values), key
+        return (
+            (qf1_state, qf2_state),
+            (qf1_loss_value, qf2_loss_value),
+            (qf1_a_values, qf2_a_values),
+            key,
+        )
 
     @jax.jit
     def update_actor(
@@ -381,19 +414,27 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         observations: np.ndarray,
     ):
         def actor_loss(params):
-            return -qf.apply(qf1_state.params, observations, actor.apply(params, observations)).mean()
+            return -qf.apply(
+                qf1_state.params, observations, actor.apply(params, observations)
+            ).mean()
 
         actor_loss_value, grads = jax.value_and_grad(actor_loss)(actor_state.params)
         actor_state = actor_state.apply_gradients(grads=grads)
         actor_state = actor_state.replace(
-            target_params=optax.incremental_update(actor_state.params, actor_state.target_params, args.tau)
+            target_params=optax.incremental_update(
+                actor_state.params, actor_state.target_params, args.tau
+            )
         )
 
         qf1_state = qf1_state.replace(
-            target_params=optax.incremental_update(qf1_state.params, qf1_state.target_params, args.tau)
+            target_params=optax.incremental_update(
+                qf1_state.params, qf1_state.target_params, args.tau
+            )
         )
         qf2_state = qf2_state.replace(
-            target_params=optax.incremental_update(qf2_state.params, qf2_state.target_params, args.tau)
+            target_params=optax.incremental_update(
+                qf2_state.params, qf2_state.target_params, args.tau
+            )
         )
         return actor_state, (qf1_state, qf2_state), actor_loss_value
 
@@ -403,15 +444,23 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             start_time_step = time.time()
             # ALGO LOGIC: put action logic here
             if global_step < args.learning_starts:
-                actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+                actions = np.array(
+                    [envs.single_action_space.sample() for _ in range(envs.num_envs)]
+                )
             else:
                 actions = actor.apply(actor_state.params, obs)
                 actions = np.array(
                     [
                         (
                             jax.device_get(actions)[0]
-                            + np.random.normal(0, max_action * args.exploration_noise, size=envs.single_action_space.shape)
-                        ).clip(envs.single_action_space.low, envs.single_action_space.high)
+                            + np.random.normal(
+                                0,
+                                max_action * args.exploration_noise,
+                                size=envs.single_action_space.shape,
+                            )
+                        ).clip(
+                            envs.single_action_space.low, envs.single_action_space.high
+                        )
                     ]
                 )
 
@@ -424,43 +473,67 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             # TRY NOT TO MODIFY: record rewards for plotting purposes
             if is_vectorized:
-                for i, (terminated, truncated) in enumerate(zip(terminations, truncations)):
+                for i, (terminated, truncated) in enumerate(
+                    zip(terminations, truncations)
+                ):
                     if (terminated or truncated) and "episode" in infos[i]:
-                        print(f"global_step={global_step}, episodic_return={infos[i]['episode']['r']}")
-                        core_context.train.report_training_metrics(
-                            steps_completed=global_step,
-                            metrics={"episodic_return": infos[i]['episode']['r']}
+                        print(
+                            f"global_step={global_step}, episodic_return={infos[i]['episode']['r']}"
                         )
                         core_context.train.report_training_metrics(
                             steps_completed=global_step,
-                            metrics={"episodic_length": infos[i]['episode']['l']}
+                            metrics={"episodic_return": infos[i]["episode"]["r"]},
                         )
                         core_context.train.report_training_metrics(
                             steps_completed=global_step,
-                            metrics={"fill_level": infos[i]['current_fill_level']}
+                            metrics={"episodic_length": infos[i]["episode"]["l"]},
                         )
-                        writer.add_scalar("charts/episodic_return", infos[i]['episode']['r'], global_step)
-                        writer.add_scalar("charts/episodic_length", infos[i]['episode']['l'], global_step)
-                        writer.add_scalar("charts/fill_level", infos[i]['current_fill_level'], global_step)
-                        break # only log the first finished episode for consistency
+                        core_context.train.report_training_metrics(
+                            steps_completed=global_step,
+                            metrics={"fill_level": infos[i]["current_fill_level"]},
+                        )
+                        writer.add_scalar(
+                            "charts/episodic_return",
+                            infos[i]["episode"]["r"],
+                            global_step,
+                        )
+                        writer.add_scalar(
+                            "charts/episodic_length",
+                            infos[i]["episode"]["l"],
+                            global_step,
+                        )
+                        writer.add_scalar(
+                            "charts/fill_level",
+                            infos[i]["current_fill_level"],
+                            global_step,
+                        )
+                        break  # only log the first finished episode for consistency
             else:
                 if (terminations or truncations) and "episode" in infos:
-                    print(f"global_step={global_step}, episodic_return={infos['episode']['r']}")
-                    core_context.train.report_training_metrics(
-                            steps_completed=global_step,
-                            metrics={"episodic_return": infos["episode"]["r"]}
-                        )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"episodic_length": infos["episode"]["l"]}
+                    print(
+                        f"global_step={global_step}, episodic_return={infos['episode']['r']}"
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"fill_level": infos['current_fill_level']}
+                        metrics={"episodic_return": infos["episode"]["r"]},
                     )
-                    writer.add_scalar("charts/episodic_return", infos["episode"]["r"], global_step)
-                    writer.add_scalar("charts/episodic_length", infos["episode"]["l"], global_step)
-                    writer.add_scalar("charts/fill_level", infos['current_fill_level'], global_step)
+                    core_context.train.report_training_metrics(
+                        steps_completed=global_step,
+                        metrics={"episodic_length": infos["episode"]["l"]},
+                    )
+                    core_context.train.report_training_metrics(
+                        steps_completed=global_step,
+                        metrics={"fill_level": infos["current_fill_level"]},
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_return", infos["episode"]["r"], global_step
+                    )
+                    writer.add_scalar(
+                        "charts/episodic_length", infos["episode"]["l"], global_step
+                    )
+                    writer.add_scalar(
+                        "charts/fill_level", infos["current_fill_level"], global_step
+                    )
 
             # TRY NOT TO MODIFY: save data to replay buffer
             real_next_obs = next_obs.copy()
@@ -479,7 +552,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             # ALGO LOGIC: training.
             if global_step > args.learning_starts:
                 data = rb.sample(args.batch_size)
-                (qf1_state, qf2_state), (qf1_loss_value, qf2_loss_value), (qf1_a_values, qf2_a_values), key = update_critic(
+                (
+                    (qf1_state, qf2_state),
+                    (qf1_loss_value, qf2_loss_value),
+                    (qf1_a_values, qf2_a_values),
+                    key,
+                ) = update_critic(
                     actor_state,
                     qf1_state,
                     qf2_state,
@@ -492,50 +570,68 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 )
 
                 if global_step % args.policy_frequency == 0:
-                    actor_state, (qf1_state, qf2_state), actor_loss_value = update_actor(
-                        actor_state,
-                        qf1_state,
-                        qf2_state,
-                        data.observations.numpy(),
+                    actor_state, (qf1_state, qf2_state), actor_loss_value = (
+                        update_actor(
+                            actor_state,
+                            qf1_state,
+                            qf2_state,
+                            data.observations.numpy(),
+                        )
                     )
 
                 if global_step % 100 == 0:
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf1_loss": qf1_loss_value.item()}
+                        metrics={"qf1_loss": qf1_loss_value.item()},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf2_loss": qf2_loss_value.item()}
+                        metrics={"qf2_loss": qf2_loss_value.item()},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf1_values": qf1_a_values.item()}
+                        metrics={"qf1_values": qf1_a_values.item()},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"qf2_values": qf2_a_values.item()}
+                        metrics={"qf2_values": qf2_a_values.item()},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"actor_loss": actor_loss_value.item()}
+                        metrics={"actor_loss": actor_loss_value.item()},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"SPS": int(global_step / (time.time() - start_time))}
+                        metrics={"SPS": int(global_step / (time.time() - start_time))},
                     )
                     core_context.train.report_training_metrics(
                         steps_completed=global_step,
-                        metrics={"step_time": time.time() - start_time_step}
+                        metrics={"step_time": time.time() - start_time_step},
                     )
-                    writer.add_scalar("losses/qf1_loss", qf1_loss_value.item(), global_step)
-                    writer.add_scalar("losses/qf2_loss", qf2_loss_value.item(), global_step)
-                    writer.add_scalar("losses/qf1_values", qf1_a_values.item(), global_step)
-                    writer.add_scalar("losses/qf2_values", qf2_a_values.item(), global_step)
-                    writer.add_scalar("losses/actor_loss", actor_loss_value.item(), global_step)
+                    writer.add_scalar(
+                        "losses/qf1_loss", qf1_loss_value.item(), global_step
+                    )
+                    writer.add_scalar(
+                        "losses/qf2_loss", qf2_loss_value.item(), global_step
+                    )
+                    writer.add_scalar(
+                        "losses/qf1_values", qf1_a_values.item(), global_step
+                    )
+                    writer.add_scalar(
+                        "losses/qf2_values", qf2_a_values.item(), global_step
+                    )
+                    writer.add_scalar(
+                        "losses/actor_loss", actor_loss_value.item(), global_step
+                    )
                     print("SPS:", int(global_step / (time.time() - start_time)))
-                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
-                    writer.add_scalar("charts/step_time", time.time() - start_time_step, global_step)
+                    writer.add_scalar(
+                        "charts/SPS",
+                        int(global_step / (time.time() - start_time)),
+                        global_step,
+                    )
+                    writer.add_scalar(
+                        "charts/step_time", time.time() - start_time_step, global_step
+                    )
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
@@ -560,13 +656,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             run_name=f"{run_name}-eval",
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
-            env_kwargs=env_kwargs
+            env_kwargs=env_kwargs,
         )
         for idx, episodic_return in enumerate(episodic_returns):
             core_context.train.report_training_metrics(
-                        steps_completed=idx,
-                        metrics={"eval_episodic_return": episodic_return}
-                    )
+                steps_completed=idx, metrics={"eval_episodic_return": episodic_return}
+            )
             writer.add_scalar("eval/episodic_return", episodic_return, idx)
 
         if args.upload_model:
@@ -574,7 +669,14 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "TD3", f"runs/{run_name}", f"videos/{run_name}-eval")
+            push_to_hub(
+                args,
+                episodic_returns,
+                repo_id,
+                "TD3",
+                f"runs/{run_name}",
+                f"videos/{run_name}-eval",
+            )
 
     envs.close()
     writer.close()

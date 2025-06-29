@@ -636,6 +636,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     writer.add_scalar(
                         "losses/actor_loss", actor_loss_value.item(), global_step
                     )
+                    print("global_step:", global_step)
                     print("SPS:", int(global_step / (time.time() - start_time)))
                     print("step time: ", time.time() - start_time_step)
                     writer.add_scalar(

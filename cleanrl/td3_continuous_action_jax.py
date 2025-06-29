@@ -482,6 +482,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf1_values", qf1_a_values.item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss_value.item(), global_step)
+                print("global_step:", global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 print("step time: ", time.time() - start_time_step)
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)

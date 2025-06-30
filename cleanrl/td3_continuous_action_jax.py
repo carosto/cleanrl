@@ -91,7 +91,7 @@ def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
             env.reset(seed=seed + idx)
-            env = gym.wrappers.RecordVideo(env, video_folder)
+            env = gym.wrappers.RecordVideo(env, os.path.join(video_folder, run_name))
         else:
             env = gym.make(env_id, **env_kwargs)
             env.reset(seed=seed + idx)
@@ -266,7 +266,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         )
 
     runs_folder = os.path.abspath(f"{args.output_dir}/runs/{run_name}")
-    video_folder = os.path.abspath(f"{args.output_dir}/videos/{run_name}")
+    video_folder = os.path.abspath(f"{args.output_dir}/videos")
 
     writer = SummaryWriter(runs_folder)
     print(f"TensorBoard logs will be saved to: {runs_folder}")
@@ -521,7 +521,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "TD3", f"{runs_folder}", f"{video_folder}-eval",)
+            push_to_hub(args, episodic_returns, repo_id, "TD3", f"{runs_folder}", f"{video_folder}/{run_name}-eval",)
 
     envs.close()
     writer.close()

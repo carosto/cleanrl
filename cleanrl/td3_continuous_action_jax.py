@@ -172,7 +172,8 @@ class Actor(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
@@ -194,7 +195,8 @@ class QNetwork(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
@@ -482,7 +484,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 writer.add_scalar("losses/qf1_values", qf1_a_values.item(), global_step)
                 writer.add_scalar("losses/qf2_values", qf2_a_values.item(), global_step)
                 writer.add_scalar("losses/actor_loss", actor_loss_value.item(), global_step)
-                print("global_step:", global_step)
                 print("SPS:", int(global_step / (time.time() - start_time)))
                 print("step time: ", time.time() - start_time_step)
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)

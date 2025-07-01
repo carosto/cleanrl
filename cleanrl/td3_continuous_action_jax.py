@@ -86,7 +86,7 @@ class Args:
     """path to the target particles for the environment (required for chamfer loss)"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
+def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos"):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
@@ -172,8 +172,8 @@ class Actor(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
@@ -195,8 +195,8 @@ class QNetwork(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
@@ -290,7 +290,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         }
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs)])
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs, video_folder=video_folder)])
     assert isinstance(envs.single_action_space, gym.spaces.Box), "only continuous action space is supported"
 
     max_action = float(envs.single_action_space.high[0])
@@ -512,8 +512,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             run_name=f"{run_name}-eval",
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
-            env_kwargs=env_kwargs
-        )
+            env_kwargs=env_kwargs,
+            video_folder=video_folder)
         for idx, episodic_return in enumerate(episodic_returns):
             writer.add_scalar("eval/episodic_return", episodic_return, idx)
 

@@ -91,7 +91,7 @@ class Args:
     """path to the target particles for the environment (required for chamfer loss)"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None):
+def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos"):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
@@ -311,9 +311,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     }
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs)]
-    )
+    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs, video_folder=video_folder)])
     assert isinstance(
         envs.single_action_space, gym.spaces.Box
     ), "only continuous action space is supported"
@@ -687,6 +685,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
             env_kwargs=env_kwargs,
+            video_folder=video_folder,
+            capture_video=False
         )
         for idx, episodic_return in enumerate(episodic_returns):
             core_context.train.report_training_metrics(

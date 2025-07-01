@@ -20,8 +20,9 @@ def evaluate(
     exploration_noise: float = 0.1,
     seed=1,
     env_kwargs: dict = None,
+    video_folder: str = "videos",
 ):
-    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name, env_kwargs)])
+    envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name, env_kwargs, video_folder)])
     max_action = float(envs.single_action_space.high[0])
     obs, _ = envs.reset()
 
@@ -97,14 +98,17 @@ def evaluate(
 if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
 
-    run_nr = 1750411979
+    run_nr = 1751240954
     run_name= f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
-    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
+
+    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
 
     env_kwargs = {
         "gnn_model_path": '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl',
         "data_path": '/shared_data/Pouring_mpc_1D_1902/',
         }
+    
+    video_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/videos/{run_name}")
       
     evaluate(
         model_path,
@@ -114,4 +118,6 @@ if __name__ == "__main__":
         run_name=f"{run_nr}_eval",
         Model=(Actor, QNetwork),
         exploration_noise=0.1,
+        env_kwargs=env_kwargs,
+        video_folder=video_folder,
     )

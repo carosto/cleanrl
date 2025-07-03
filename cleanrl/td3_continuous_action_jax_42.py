@@ -91,7 +91,9 @@ class Args:
     """path to the target particles for the environment (required for chamfer loss)"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos"):
+def make_env(
+    env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos"
+):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
@@ -311,7 +313,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     }
 
     # env setup
-    envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs, video_folder=video_folder)])
+    envs = gym.vector.SyncVectorEnv(
+        [
+            make_env(
+                args.env_id,
+                args.seed,
+                0,
+                args.capture_video,
+                run_name,
+                env_kwargs,
+                video_folder=video_folder,
+            )
+        ]
+    )
     assert isinstance(
         envs.single_action_space, gym.spaces.Box
     ), "only continuous action space is supported"
@@ -497,16 +511,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                                 "fill_level": float(infos[i]["current_fill_level"]),
                             },
                         )
-                        """core_context.train.report_training_metrics(
-                            steps_completed=global_step,
-                            metrics={"episodic_length": int(infos[i]["episode"]["l"])},
-                        )
-                        core_context.train.report_training_metrics(
-                            steps_completed=global_step,
-                            metrics={
-                                "fill_level": float(infos[i]["current_fill_level"])
-                            },
-                        )"""
                         writer.add_scalar(
                             "charts/episodic_return",
                             infos[i]["episode"]["r"],
@@ -536,14 +540,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                             "fill_level": float(infos["current_fill_level"]),
                         },
                     )
-                    """core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"episodic_length": int(infos["episode"]["l"])},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"fill_level": float(infos["current_fill_level"])},
-                    )"""
                     writer.add_scalar(
                         "charts/episodic_return", infos["episode"]["r"], global_step
                     )
@@ -611,30 +607,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                             "step_time": time.time() - start_time_step,
                         },
                     )
-                    """core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"qf2_loss": float(qf2_loss_value.item())},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"qf1_values": float(qf1_a_values.item())},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"qf2_values": float(qf2_a_values.item())},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"actor_loss": float(actor_loss_value.item())},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"SPS": int(global_step / (time.time() - start_time))},
-                    )
-                    core_context.train.report_training_metrics(
-                        steps_completed=global_step,
-                        metrics={"step_time": time.time() - start_time_step},
-                    )"""
                     writer.add_scalar(
                         "losses/qf1_loss", qf1_loss_value.item(), global_step
                     )
@@ -686,7 +658,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             exploration_noise=args.exploration_noise,
             env_kwargs=env_kwargs,
             video_folder=video_folder,
-            capture_video=False
+            capture_video=False,
         )
         for idx, episodic_return in enumerate(episodic_returns):
             core_context.train.report_training_metrics(

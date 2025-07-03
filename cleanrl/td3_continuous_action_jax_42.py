@@ -181,7 +181,8 @@ class Actor(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
@@ -204,7 +205,8 @@ class QNetwork(nn.Module):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
         particle_flat = flat_obs[:, 18:]
-        particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)

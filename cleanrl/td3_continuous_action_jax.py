@@ -504,6 +504,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         print(f"model saved to {model_path}")
         from cleanrl_utils.evals.td3_jax_eval import evaluate
 
+        eval_rewards_folder = os.path.abspath(f"{args.output_dir}/saved_rewards")
+
         episodic_returns = evaluate(
             model_path,
             make_env,
@@ -513,7 +515,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
             env_kwargs=env_kwargs,
-            video_folder=video_folder)
+            video_folder=video_folder,
+            rewards_folder=eval_rewards_folder)
         for idx, episodic_return in enumerate(episodic_returns):
             writer.add_scalar("eval/episodic_return", episodic_return, idx)
 

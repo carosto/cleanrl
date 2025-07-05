@@ -21,6 +21,7 @@ def evaluate(
     seed=1,
     env_kwargs: dict = None,
     video_folder: str = "videos",
+    rewards_folder: str = "saved_rewards",
 ):
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name, env_kwargs, video_folder)])
     max_action = float(envs.single_action_space.high[0])
@@ -52,7 +53,7 @@ def evaluate(
     rewards_per_episode = []
     fill_levels_per_episode = []
 
-    os.makedirs(f"saved_rewards/{run_name}", exist_ok=True)
+    os.makedirs(f"{rewards_folder}/{run_name}", exist_ok=True)
     while len(episodic_returns) < eval_episodes:
         actions = actor.apply(actor_params, obs)
         actions = np.array(
@@ -74,8 +75,8 @@ def evaluate(
         # Support both single and multiple environments
         if isinstance(infos, dict):  # Single environment
             if (terminated or truncated) and "episode" in infos:
-                np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
-                np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
+                np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
                 print(f"eval_episode={len(episodic_returns)}, episodic_return={infos['episode']['r']}")
                 episodic_returns.append(infos["episode"]["r"])
                 rewards_per_episode = []
@@ -83,8 +84,8 @@ def evaluate(
         else:  # Vectorized environment
             for i, done in enumerate(dones):
                 if done and "episode" in infos[i]:
-                    np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
-                    np.savez(f"saved_rewards/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                    np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
+                    np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
                     print(f"eval_episode={len(episodic_returns)}, episodic_return={infos[i]['episode']['r']}")
                     episodic_returns.append(infos[i]['episode']['r'])
                     rewards_per_episode = []
@@ -98,26 +99,28 @@ def evaluate(
 if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
 
-    run_nr = 1751240954
-    run_name= f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
+    run_nr = 1751628762
+    run_name= f"PouringEnv-v0__td3_continuous_action_jax_42__2__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
-    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
+    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
 
     env_kwargs = {
         "gnn_model_path": '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl',
         "data_path": '/shared_data/Pouring_mpc_1D_1902/',
         }
     
-    video_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/videos/{run_name}")
+    video_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/videos/")
+    rewards_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/saved_rewards/")
       
     evaluate(
         model_path,
         make_env,
         "PouringEnv-v0",
         eval_episodes=10,
-        run_name=f"{run_nr}_eval",
+        run_name=f"{run_name}_eval",
         Model=(Actor, QNetwork),
         exploration_noise=0.1,
         env_kwargs=env_kwargs,
         video_folder=video_folder,
+        rewards_folder=rewards_folder
     )

@@ -99,7 +99,7 @@ def evaluate(
 if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
 
-    run_nr = 1751628762
+    run_nr = 1751812172
     run_name= f"PouringEnv-v0__td3_continuous_action_jax_42__2__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
     model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
@@ -117,7 +117,7 @@ if __name__ == "__main__":
         make_env,
         "PouringEnv-v0",
         eval_episodes=10,
-        run_name=f"{run_name}_eval",
+        run_name=f"{run_name}-eval",
         Model=(Actor, QNetwork),
         exploration_noise=0.1,
         env_kwargs=env_kwargs,

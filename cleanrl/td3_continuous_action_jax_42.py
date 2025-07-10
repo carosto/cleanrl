@@ -274,7 +274,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 """
         )
     args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    
+    import uuid
+    suffix = uuid.uuid4().hex[:6]
+    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}_{suffix}"
     if args.track:
         import wandb
 

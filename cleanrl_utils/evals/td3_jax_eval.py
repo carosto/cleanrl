@@ -52,6 +52,8 @@ def evaluate(
     episodic_returns = []
     rewards_per_episode = []
     fill_levels_per_episode = []
+    jug_rotations_per_episode = []
+    cup_fill_rates_per_episode = []
 
     os.makedirs(f"{rewards_folder}/{run_name}", exist_ok=True)
     while len(episodic_returns) < eval_episodes:
@@ -69,6 +71,8 @@ def evaluate(
         next_obs, rewards, terminated, truncated, infos = envs.step(actions)
         rewards_per_episode.append(rewards[0]) # currently works for only one environment in the SyncVectorEnv
         fill_levels_per_episode.append(infos['current_fill_level'][0]) # currently works for only one environment in the SyncVectorEnv
+        jug_rotations_per_episode.append(infos['jug_rotation'][0]) # currently works for only one environment in the SyncVectorEnv
+        cup_fill_rates_per_episode.append(infos['cup_fill_rate'][0]) # currently works for only one environment in the SyncVectorEnv
 
         dones = terminated | truncated
 
@@ -77,19 +81,27 @@ def evaluate(
             if (terminated or truncated) and "episode" in infos:
                 np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
                 np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_jug_rotations.npz", jug_rotations_per_episode)
+                np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_cup_fill_rates.npz", cup_fill_rates_per_episode)
                 print(f"eval_episode={len(episodic_returns)}, episodic_return={infos['episode']['r']}")
                 episodic_returns.append(infos["episode"]["r"])
                 rewards_per_episode = []
                 fill_levels_per_episode = []
+                jug_rotations_per_episode = []
+                cup_fill_rates_per_episode = []
         else:  # Vectorized environment
             for i, done in enumerate(dones):
                 if done and "episode" in infos[i]:
                     np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}.npz", rewards_per_episode)
                     np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_filllevels.npz", fill_levels_per_episode)
+                    np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_jug_rotations.npz", jug_rotations_per_episode)
+                    np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_cup_fill_rates.npz", cup_fill_rates_per_episode)
                     print(f"eval_episode={len(episodic_returns)}, episodic_return={infos[i]['episode']['r']}")
                     episodic_returns.append(infos[i]['episode']['r'])
                     rewards_per_episode = []
                     fill_levels_per_episode = []
+                    jug_rotations_per_episode = []
+                    cup_fill_rates_per_episode = []
 
         obs = next_obs
 
@@ -99,10 +111,10 @@ def evaluate(
 if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
 
-    run_nr = 1751812172
-    run_name= f"PouringEnv-v0__td3_continuous_action_jax_42__2__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
+    run_nr = "1752005298"
+    run_name= f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
-    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
+    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
 
     env_kwargs = {
         "gnn_model_path": '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl',

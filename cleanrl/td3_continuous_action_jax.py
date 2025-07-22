@@ -287,10 +287,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     key, actor_key, qf1_key, qf2_key = jax.random.split(key, 4)
 
     env_kwargs = {
-        "gnn_model_path": args.gnn_model_path,
         "data_path": args.data_path,
         "target_particles_path": args.target_particles_path,
         }
+
+    if "Isaac" not in args.env_id:
+        env_kwargs["gnn_model_path"] = args.gnn_model_path
 
     # env setup
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name, env_kwargs, video_folder=video_folder)])
@@ -491,7 +493,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 print("step time: ", time.time() - start_time_step)
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/step_time", time.time() - start_time_step, global_step)
-
+    envs.close()# moved up here to make sure that there is no conflict with make_env in eval
     if args.save_model:
         model_path = f"{runs_folder}/{args.exp_name}.cleanrl_model"
         with open(model_path, "wb") as f:
@@ -530,5 +532,4 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
             push_to_hub(args, episodic_returns, repo_id, "TD3", f"{runs_folder}", f"{video_folder}/{run_name}-eval",)
 
-    envs.close()
     writer.close()

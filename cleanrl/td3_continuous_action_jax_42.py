@@ -312,10 +312,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     key, actor_key, qf1_key, qf2_key = jax.random.split(key, 4)
 
     env_kwargs = {
-        "gnn_model_path": args.gnn_model_path,
+        #"gnn_model_path": args.gnn_model_path,
         "data_path": args.data_path,
         "target_particles_path": args.target_particles_path,
     }
+
+    if "Isaac" not in args.env_id:
+        env_kwargs["gnn_model_path"] = args.gnn_model_path
 
     # env setup
     envs = gym.vector.SyncVectorEnv(
@@ -637,7 +640,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     writer.add_scalar(
                         "charts/step_time", time.time() - start_time_step, global_step
                     )
-
+    envs.close()# moved up here to make sure that there is no conflict with make_env in eval
     if args.save_model:
         model_path = f"{runs_folder}/{args.exp_name}.cleanrl_model"
         with open(model_path, "wb") as f:
@@ -689,5 +692,4 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 f"{video_folder}/{run_name}-eval",
             )
 
-    envs.close()
     writer.close()

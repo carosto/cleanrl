@@ -24,6 +24,7 @@ import tyro
 from flax.training.train_state import TrainState
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
+import json
 
 
 @dataclass
@@ -75,6 +76,15 @@ class Args:
     noise_clip: float = 0.5
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
+    initial_exploration_noise: float = 0.2
+    min_exploration_noise: float= 0.05
+    max_exploration_noise: float  = 0.2
+    exploration_warmup_steps: float = 5000
+
+    signal_noise: float = 0.1
+    min_signal_noise: float = 0.05
+    max_signal_noise: float = 0.2
+
     # Enviroment specific arguments
     gnn_model_path: str = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
     """the path to the GNN model checkpoint"""
@@ -85,13 +95,32 @@ class Args:
     )
     """path to the target particles for the environment (required for chamfer loss)"""
 
+    target_level_wgt: float = 1.0
+    pt_cup_wgt: float = 5.0
+    pt_flow_wgt: float = -30.0
+    pt_spill_wgt: float = -2.0
+    action_cost: float = -0.01
+    jug_resting_wgt: float = -0.000001
+    jug_velocity_wgt: float = 0.0
+    distance_wgt: float = 0.0
+    fovea_radius: int = 30
+    time_penalty: float = -0.001
+    """weights for the different components of the reward function"""
 
-def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos"):
+
+def make_env(env_id, seed, idx, capture_video, run_name, env_kwargs=None, video_folder="videos", video_capture_trigger=None):
     def thunk():
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_kwargs)
             env.reset(seed=seed + idx)
-            env = gym.wrappers.RecordVideo(env, os.path.join(video_folder, run_name))
+            if video_capture_trigger is None:
+                env = gym.wrappers.RecordVideo(env, os.path.join(video_folder, run_name))
+            else:
+                env = gym.wrappers.RecordVideo(
+                    env,
+                    os.path.join(video_folder, run_name),
+                    episode_trigger=video_capture_trigger,
+                )
         else:
             env = gym.make(env_id, **env_kwargs)
             env.reset(seed=seed + idx)
@@ -162,6 +191,66 @@ class ParticleEncoder(nn.Module):
         x = jnp.mean(x, axis=1)           # mean pool over particles → (batch, 64)
         return x
     
+# Image + Gaze Encoder
+class ImageGazeEncoder(nn.Module):
+    gaze_dim: int = 2
+
+    @nn.compact
+    def __call__(self, img, gaze):
+        """
+        img: (batch, H*W), flattened grayscale image
+        gaze: (batch, 2), normalized gaze position
+        """
+        batch_size, flat_dim = img.shape
+        x = img.reshape((batch_size, 64, 64, 1))
+
+        # Efficient CNN
+        x = nn.Conv(16, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(32, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(64, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        # Global average pooling
+        x = jnp.mean(x, axis=(1, 2))  # (batch, 64)
+
+        # Combine with gaze
+        x = jnp.concatenate([x, gaze], axis=-1)
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        return x  # (batch, 128)
+
+# Image Encoder (NO GAZE!!!!)
+class ImageEncoder(nn.Module):
+
+    @nn.compact
+    def __call__(self, img):
+        """
+        img: (batch, H*W), flattened grayscale image
+        gaze: (batch, 2), normalized gaze position
+        """
+        batch_size, flat_dim = img.shape
+        x = img.reshape((batch_size, 64, 64, 1))
+
+        # Efficient CNN
+        x = nn.Conv(16, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(32, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+        x = nn.Conv(64, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        # Global average pooling
+        x = jnp.mean(x, axis=(1, 2))  # (batch, 64)
+
+        # Combine with gaze
+        x = jnp.concatenate([x], axis=-1)
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+        return x  # (batch, 128)
+"""
+# with jug and gaze action together
 class Actor(nn.Module):
     action_dim: int
     action_scale: jnp.ndarray
@@ -171,7 +260,191 @@ class Actor(nn.Module):
     def __call__(self, flat_obs):
         # Split flat observation
         jug_obs = flat_obs[:, :18]
-        particle_flat = flat_obs[:, 18:]
+        #particle_flat = flat_obs[:, 18:]
+        #particle_flat = flat_obs[:, 18:18+1047*9]# TODO: add back in for liquid data
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
+
+        #img_flat_start = 18 + 1047*9 # TODO: add back in for liquid data
+        img_flat_start = 18 
+        img_flat_end = -2  # last 2 values are gaze
+        img_flat = flat_obs[:, img_flat_start:img_flat_end]
+        gaze = flat_obs[:, -2:]
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        #liquid_emb = ParticleEncoder()(particles) # TODO: add back in for liquid data
+        img_emb = ImageGazeEncoder()(img_flat, gaze)
+
+        # Combine and pass through actor MLP
+        #x = jnp.concatenate([jug_emb, liquid_emb, img_emb], axis=-1) # TODO: add back in for liquid data
+        x = jnp.concatenate([jug_emb, img_emb], axis=-1)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(self.action_dim)(x)
+        x = nn.tanh(x)
+        return x * self.action_scale + self.action_bias
+"""
+"""
+# for visual processing (with gaze)
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray
+    action_bias: jnp.ndarray
+
+    @nn.compact
+    def __call__(self, flat_obs):
+        jug_action_dim = self.action_dim - 2
+        gaze_action_dim = 2  # last two dimensions for gaze
+
+        # Split observation
+        jug_obs = flat_obs[:, :18]
+        #particle_flat = flat_obs[:, 18:18+1047*9]# TODO: add back in for liquid data
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))# TODO: add back in for liquid data
+
+        #img_flat_start = 18 + 1047*9 # TODO: add back in for liquid data
+        img_flat_start = 18 
+        img_flat_end = -2
+        img_flat = flat_obs[:, img_flat_start:img_flat_end]
+        gaze = flat_obs[:, -2:]
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        #liquid_emb = ParticleEncoder()(particles)# TODO: add back in for liquid data
+        img_emb = ImageGazeEncoder()(img_flat, gaze)
+
+        # Shared representation
+        #trunk = jnp.concatenate([jug_emb, liquid_emb, img_emb], axis=-1)# TODO: add back in for liquid data
+        trunk = jnp.concatenate([jug_emb, img_emb], axis=-1)
+
+        # Jug action head
+        x_jug = nn.Dense(256)(trunk)
+        x_jug = nn.relu(x_jug)
+        x_jug = nn.Dense(256)(x_jug)
+        x_jug = nn.relu(x_jug)
+        jug_action = nn.tanh(nn.Dense(jug_action_dim)(x_jug))
+
+        # Gaze action head (image-focused)
+        x_gaze = nn.Dense(128)(img_emb)  # rely more directly on image
+        x_gaze = nn.relu(x_gaze)
+        gaze_action = nn.tanh(nn.Dense(gaze_action_dim)(x_gaze))
+
+        # Concatenate final actions
+        action = jnp.concatenate([jug_action, gaze_action], axis=-1)
+        return action * self.action_scale + self.action_bias
+
+class QNetwork(nn.Module):
+    @nn.compact
+    def __call__(self, flat_obs, action):
+        # Split flat observation
+        jug_obs = flat_obs[:, :18]
+        #particle_flat = flat_obs[:, 18:]
+
+        #img_flat_start = 18 + 1047*9 # TODO add back in 
+        img_flat_start = 18 
+        img_flat_end = -2
+        img_flat = flat_obs[:, img_flat_start:img_flat_end]
+        gaze = flat_obs[:, -2:]
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        #liquid_emb = ParticleEncoder()(particles) # TODO add back in
+        img_emb = ImageGazeEncoder()(img_flat, gaze)
+
+        # Combine with action
+        #x = jnp.concatenate([jug_emb, liquid_emb, img_emb, action], axis=-1)
+        x = jnp.concatenate([jug_emb, img_emb, action], axis=-1) # TODO add back in
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x
+"""
+
+"""
+# for visual processing (without gaze)
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray
+    action_bias: jnp.ndarray
+
+    @nn.compact
+    def __call__(self, flat_obs):
+        jug_action_dim = self.action_dim
+        #gaze_action_dim = 2  # last two dimensions for gaze
+
+        # Split observation
+        jug_obs = flat_obs[:, :18]
+        #particle_flat = flat_obs[:, 18:18+1047*9]# TODO: add back in for liquid data
+        #particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))# TODO: add back in for liquid data
+
+        #img_flat_start = 18 + 1047*9 # TODO: add back in for liquid data
+        img_flat_start = 18 
+        img_flat = flat_obs[:, img_flat_start:]
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        #liquid_emb = ParticleEncoder()(particles)# TODO: add back in for liquid data
+        img_emb = ImageEncoder()(img_flat)
+
+        # Shared representation
+        #trunk = jnp.concatenate([jug_emb, liquid_emb, img_emb], axis=-1)# TODO: add back in for liquid data
+        trunk = jnp.concatenate([jug_emb, img_emb], axis=-1)
+        #trunk = jnp.concatenate([jug_emb], axis=-1)
+
+        # Jug action head
+        x_jug = nn.Dense(256)(trunk)
+        x_jug = nn.relu(x_jug)
+        x_jug = nn.Dense(256)(x_jug)
+        x_jug = nn.relu(x_jug)
+        jug_action = nn.tanh(nn.Dense(jug_action_dim)(x_jug))
+
+        # Concatenate final actions
+        action = jnp.concatenate([jug_action], axis=-1)
+        return action * self.action_scale + self.action_bias
+
+class QNetwork(nn.Module):
+    @nn.compact
+    def __call__(self, flat_obs, action):
+        # Split flat observation
+        jug_obs = flat_obs[:, :18]
+        #particle_flat = flat_obs[:, 18:]
+
+        #img_flat_start = 18 + 1047*9 # TODO add back in 
+        img_flat_start = 18 
+        img_flat = flat_obs[:, img_flat_start:]
+
+        # Encode
+        jug_emb = JugEncoder()(jug_obs)
+        #liquid_emb = ParticleEncoder()(particles) # TODO add back in
+        img_emb = ImageEncoder()(img_flat)
+
+        # Combine with action
+        #x = jnp.concatenate([jug_emb, liquid_emb, img_emb, action], axis=-1)
+        x = jnp.concatenate([jug_emb, img_emb, action], axis=-1) # TODO add back in
+        #x = jnp.concatenate([jug_emb, action], axis=-1) # TODO add back in
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        return x
+"""
+
+# without visual processing
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray
+    action_bias: jnp.ndarray
+
+    @nn.compact
+    def __call__(self, flat_obs):
+        # Split flat observation
+        jug_obs = flat_obs[:, :19]
+        particle_flat = flat_obs[:, 19:]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
         particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
@@ -189,12 +462,13 @@ class Actor(nn.Module):
         x = nn.tanh(x)
         return x * self.action_scale + self.action_bias
 
+
 class QNetwork(nn.Module):
     @nn.compact
     def __call__(self, flat_obs, action):
         # Split flat observation
-        jug_obs = flat_obs[:, :18]
-        particle_flat = flat_obs[:, 18:]
+        jug_obs = flat_obs[:, :19]
+        particle_flat = flat_obs[:, 19:]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
         particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
 
@@ -210,33 +484,6 @@ class QNetwork(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(1)(x)
         return x
-"""class QNetwork(nn.Module):
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, a: jnp.ndarray):
-        x = jnp.concatenate([x, a], -1)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(1)(x)
-        return x
-
-
-class Actor(nn.Module):
-    action_dim: int
-    action_scale: jnp.ndarray
-    action_bias: jnp.ndarray
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(self.action_dim)(x)
-        x = nn.tanh(x)
-        x = x * self.action_scale + self.action_bias
-        return x"""
 
 
 class TrainState(TrainState):
@@ -280,15 +527,31 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
+    json.dump(vars(args), open(os.path.join(runs_folder, "hyperparameters.json"), "w"), indent=4)
+
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     key = jax.random.PRNGKey(args.seed)
     key, actor_key, qf1_key, qf2_key = jax.random.split(key, 4)
 
+    reward_weights = {
+        "target_level_wgt": args.target_level_wgt,
+        "pt_cup_wgt": args.pt_cup_wgt,
+        "pt_flow_wgt": args.pt_flow_wgt,
+        "pt_spill_wgt": args.pt_spill_wgt,
+        "action_cost": args.action_cost,
+        "jug_resting_wgt": args.jug_resting_wgt,
+        "jug_velocity_wgt": args.jug_velocity_wgt,
+        "distance_wgt": args.distance_wgt,
+        "fovea_radius": args.fovea_radius,
+        "time_penalty": args.time_penalty,
+    }
+
     env_kwargs = {
         "data_path": args.data_path,
         "target_particles_path": args.target_particles_path,
+        "reward_weights": reward_weights,
         }
 
     if "Isaac" not in args.env_id:
@@ -353,6 +616,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # TODO Maybe pre-generate a lot of random keys
         # also check https://jax.readthedocs.io/en/latest/jax.random.html
         key, noise_key = jax.random.split(key, 2)
+        
+        # with signal independent noise
         clipped_noise = (
             jnp.clip(
                 (jax.random.normal(noise_key, actions.shape) * args.policy_noise),
@@ -360,12 +625,39 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 args.noise_clip,
             )
             * actor.action_scale
-        )
+        ) # this is signal-independent noise (independent of action magnitude)
         next_state_actions = jnp.clip(
             actor.apply(actor_state.target_params, next_observations) + clipped_noise,
             envs.single_action_space.low,
             envs.single_action_space.high,
         )
+        """
+        # with action-dependent noise
+        action = actor.apply(actor_state.target_params, next_observations)
+
+        # variance matching
+        abs_action = jnp.abs(action)
+        scale = abs_action / (jnp.mean(abs_action) + 1e-6)
+
+        noise = (
+            jax.random.normal(noise_key, action.shape)
+            * args.policy_noise
+            * scale
+        )
+    
+        # different scaling attempt
+        #scale = jnp.maximum(1.0, jnp.abs(action))
+        #noise = jax.random.normal(noise_key, action.shape) * args.policy_noise * scale
+
+        noise = jnp.clip(noise, -args.noise_clip, args.noise_clip)
+    
+        next_state_actions = jnp.clip(
+            action + noise,
+            envs.single_action_space.low,
+            envs.single_action_space.high,
+        )
+        """
+
         qf1_next_target = qf.apply(qf1_state.target_params, next_observations, next_state_actions).reshape(-1)
         qf2_next_target = qf.apply(qf2_state.target_params, next_observations, next_state_actions).reshape(-1)
         min_qf_next_target = jnp.minimum(qf1_next_target, qf2_next_target)
@@ -413,15 +705,76 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            actions = actor.apply(actor_state.params, obs)
-            actions = np.array(
+            
+            # deterministic action from actor
+            # signal-independent exploration noise 
+            actions_det = actor.apply(actor_state.params, obs)
+            actions_det = np.array(jax.device_get(actions_det))
+
+            expl_noise = np.random.normal(0, max_action * args.exploration_noise, size=envs.single_action_space.shape)
+            """actions = np.array(
                 [
                     (
                         jax.device_get(actions)[0]
                         + np.random.normal(0, max_action * args.exploration_noise, size=envs.single_action_space.shape)
                     ).clip(envs.single_action_space.low, envs.single_action_space.high)
                 ]
+            )"""
+            # signal-dependent noise
+            noise_scale = (
+                args.min_signal_noise
+                + args.signal_noise * (np.abs(actions_det) / max_action)
             )
+
+            # Clip noise scale for stability
+            noise_scale = np.clip(
+                noise_scale,
+                args.min_signal_noise,
+                args.max_signal_noise,
+            )
+
+            execution_noise = np.random.normal(
+                loc=0.0,
+                scale=noise_scale,
+                size=actions_det.shape,
+            )
+            """if global_step < args.learning_starts + args.exploration_warmup_steps:
+                # Signal-INDEPENDENT noise during warmup
+                noise = np.random.normal(
+                    loc=0.0,
+                    scale=args.initial_exploration_noise,
+                    size=actions_det.shape,
+                )
+            else:
+                # Signal-DEPENDENT noise after warmup
+                noise_scale = (
+                    args.min_exploration_noise
+                    + args.exploration_noise * np.abs(actions_det)#np.sqrt(np.abs(actions_det))
+                )
+
+                # Clip noise scale for stability
+                noise_scale = np.clip(
+                    noise_scale,
+                    args.min_exploration_noise,
+                    args.max_exploration_noise,
+                )
+
+                noise = np.random.normal(
+                    loc=0.0,
+                    scale=noise_scale,
+                    size=actions_det.shape,
+                )"""
+
+            actions = actions_det + expl_noise + execution_noise
+
+            actions = actions.clip(
+                envs.single_action_space.low,
+                envs.single_action_space.high,
+            )
+
+            writer.add_scalar("charts/total_noise_actions", expl_noise + execution_noise, global_step)
+            writer.add_scalar("charts/exploration_noise", expl_noise, global_step)
+            writer.add_scalar("charts/signal_noise", execution_noise, global_step)
 
         # CHANGED: original version used final_info to detect done which was removed in gymnasium 1.0.0
         # TRY NOT TO MODIFY: execute the game and log data.
@@ -515,10 +868,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             model_path,
             make_env,
             args.env_id,
-            eval_episodes=10,
+            eval_episodes=20,
             run_name=f"{run_name}-eval",
             Model=(Actor, QNetwork),
             exploration_noise=args.exploration_noise,
+            signal_noise=args.signal_noise,
+            min_signal_noise=args.min_signal_noise,
+            max_signal_noise=args.max_signal_noise,
             env_kwargs=env_kwargs,
             video_folder=video_folder,
             rewards_folder=eval_rewards_folder)

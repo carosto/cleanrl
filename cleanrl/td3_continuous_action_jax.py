@@ -364,7 +364,7 @@ class QNetwork(nn.Module):
         return x
 """
 
-"""
+
 # for visual processing (without gaze)
 class Actor(nn.Module):
     action_dim: int
@@ -484,7 +484,7 @@ class QNetwork(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(1)(x)
         return x
-
+"""
 
 class TrainState(TrainState):
     target_params: flax.core.FrozenDict

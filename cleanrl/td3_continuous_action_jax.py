@@ -1,6 +1,8 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/td3/#td3_continuous_action_jaxpy
+import functools
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"]="false"
+import pickle
 import random
 import time
 from dataclasses import dataclass
@@ -25,6 +27,14 @@ from flax.training.train_state import TrainState
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 import json
+
+from learning_to_simulate_pouring import learned_simulator, model_utils, pouring_env
+import haiku as hk
+import jax.tree_util as tree
+
+import open3d as o3d
+
+from scipy.spatial.transform import Rotation as R
 
 
 @dataclass
@@ -249,6 +259,386 @@ class ImageEncoder(nn.Module):
         x = nn.Dense(128)(x)
         x = nn.relu(x)
         return x  # (batch, 128)
+
+# Image Encoder for multiple consecutive frames  
+class ImageEncoderMultiple(nn.Module):
+    num_frames: int = 4
+
+    @nn.compact
+    def __call__(self, img):
+        """
+        img: (batch, num_frames * H * W)
+        """
+
+        batch_size, flat_dim = img.shape
+        x = img.reshape((batch_size, 64, 64, self.num_frames))  # ← key change
+
+        # CNN
+        x = nn.Conv(32, (3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(64, (3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(128, (3, 3), strides=(2, 2), padding='SAME')(x)
+        x = nn.relu(x)
+
+        # Global average pooling
+        x = jnp.mean(x, axis=(1, 2))
+
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+
+        return x
+
+class ImageEncoderMultiple3D(nn.Module):
+    num_frames: int = 4
+
+    @nn.compact
+    def __call__(self, img):
+        """
+        img: (batch, num_frames * H * W)
+        """
+
+        batch_size, flat_dim = img.shape
+        H = 64
+        W = 64
+
+        # Reshape to (batch, time, height, width, channels)
+        x = img.reshape((batch_size, self.num_frames, H, W, 1))
+
+        # 3D CNN layers (time × space)
+        x = nn.Conv(
+            features=32,
+            kernel_size=(3, 5, 5),
+            strides=(1, 2, 2),
+            padding="SAME"
+        )(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(
+            features=64,
+            kernel_size=(3, 3, 3),
+            strides=(1, 2, 2),
+            padding="SAME"
+        )(x)
+        x = nn.relu(x)
+
+        x = nn.Conv(
+            features=128,
+            kernel_size=(3, 3, 3),
+            strides=(1, 2, 2),
+            padding="SAME"
+        )(x)
+        x = nn.relu(x)
+
+        # Global average pooling over time + space
+        x = jnp.mean(x, axis=(1, 2, 3))  # (batch, features)
+
+        x = nn.Dense(128)(x)
+        x = nn.relu(x)
+
+        return x
+
+class GNNEncoder():
+    INPUT_SEQUENCE_LENGTH : int = 6
+    def __init__(self, gnn_model_path, data_path):
+        self.gnn_model_path = gnn_model_path
+        self.data_path = data_path
+
+        self.max_time = 1
+
+        self.metadata_model = self._read_metadata(self.data_path)
+        self.collision_mesh_info_list = self.metadata_model["collision_mesh"]
+        self.mesh_pt_type_list = [
+            z[1] for z in self.collision_mesh_info_list
+        ]  # mesh pt type for handling in v_o
+
+        self.connectivity_radius = self.metadata_model["default_connectivity_radius"]
+        self.max_n_liq_node_per_graph = int(
+            self.metadata_model["max_n_liq_node"]
+        )  #  can be read from position as well.. ignore for now
+        self.max_edges_l_per_graph = int(self.metadata_model["max_n_edge_l"])
+        self.max_edges_m_per_graph = int(self.metadata_model["max_n_edge_m"])
+
+        self.max_nodes_edges_info = [
+            len(self.collision_mesh_info_list),
+            self.max_n_liq_node_per_graph,
+            self.max_edges_l_per_graph,
+            self.max_edges_m_per_graph,
+        ]
+
+        self.jug_name = self.metadata_model["collision_mesh"][0][0]
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        self.jug_path = os.path.join(BASE_DIR, "ObjectFiles", self.jug_name)
+        # self.jug_path = f'./ObjectFiles/{self.jug_name}'
+
+        self.jug_vertices = self._read_mesh_vertices(self.jug_path)
+        self.config_dict = {
+            "jug_vertices_count": len(self.jug_vertices),
+        }
+
+         # set up stuff from pouring_env
+        self.particle_types = pouring_env.get_particle_types(self.data_path)
+        self.initial_features = pouring_env.build_initial_features(
+            self.data_path, self.mesh_pt_type_list
+        )
+
+        # saved trajectories for the run (0 -> max timesteps)
+        self.state_liq_pos_full_traj = None
+        self.state_mesh_node_pos_full_traj = None
+        self.state_mesh_pose_full_traj = None
+
+        self._load_model()
+
+        # initialize features for model input (liquid position, object positions,....)
+        self.state_liq_pos_full_traj = jnp.zeros(
+            (self.max_time, self.max_n_liq_node_per_graph, self.INPUT_SEQUENCE_LENGTH, 3)
+        )
+        self.state_mesh_node_pos_full_traj = jnp.zeros(
+            (self.max_time, self.max_edges_m_per_graph, self.INPUT_SEQUENCE_LENGTH, 3)
+        )
+        self.state_mesh_pose_full_traj = jnp.zeros(
+            (self.max_time, 3, self.INPUT_SEQUENCE_LENGTH, 6)
+        )  # 3 objects
+
+        self.state_liq_pos_full_traj = self.state_liq_pos_full_traj.at[0].set(
+            self.initial_features["liq_position"]
+        )
+        self.state_mesh_node_pos_full_traj = self.state_mesh_node_pos_full_traj.at[
+            0
+        ].set(self.initial_features["mesh_position"][0])
+        self.state_mesh_pose_full_traj = self.state_mesh_pose_full_traj.at[0].set(
+            self.initial_features["mesh_pose"][0]
+        )
+        
+        self._init_input_features()
+    
+    def _load_model(self):
+        # load the model for the first time
+        self.model, self.network_params = self._load_gnn_model(
+            self.gnn_model_path,
+            self.connectivity_radius,
+            self.collision_mesh_info_list,
+            self.max_nodes_edges_info,
+        )
+        self._fast_apply = jax.jit(lambda p, s, g: self.model.apply(p, s, g))
+        self._fast_model_step = jax.jit(
+            lambda j, p: self._apply_gnn_processing_step(j, p)
+        )
+        print("Model loaded successfully.")
+
+    def _init_input_features(self):
+        # requires 6 consecutive positions for liquid and jug (current + 5 past timesteps)
+        state_liq_pos_cur = self.state_liq_pos_full_traj[0]
+        state_mesh_node_pos_cur = self.state_mesh_node_pos_full_traj[0]
+        state_mesh_pose_cur = self.state_mesh_pose_full_traj[0]
+
+        # put the current state to the model and the encoded + processed liquid values
+        input_features = {
+            "liq_position": state_liq_pos_cur,
+            "mesh_position": state_mesh_node_pos_cur[jnp.newaxis],
+            "mesh_pose": state_mesh_pose_cur[jnp.newaxis],
+            "particle_type": self.particle_types,
+            "particle_type_obj": jnp.array(self.mesh_pt_type_list),
+        }
+        self.input_graph = pouring_env.build_graph(
+            input_features, self.max_n_liq_node_per_graph, self.max_edges_l_per_graph
+        )
+
+    def _apply_gnn_processing_step(self, past_jug_poses, past_particle_positions):
+        """
+        Apply the GNN model processing step to the input graph.
+        Args:
+            updated_jug_pose: Updated jug pose.
+            input_graph: Input graph for the model.
+        Returns:
+            input_graph: Modified input graph after processing.
+            latent_liquid_representation: Latent representation of liquid particles.
+        """
+        """with open("old_input_graph.pkl", "wb") as f:
+            pickle.dump(self.input_graph.nodes, f)"""
+        input_graph_local = tree.tree_map(lambda x: x.copy(), self.input_graph)
+        prev_liq_position = input_graph_local.nodes["liq_position"]
+        prev_mesh_position = input_graph_local.nodes["mesh_position"]
+        prev_mesh_pose = input_graph_local.nodes["mesh_pose"]
+
+        # fill up history with the transformed jug positions, oldest to newest
+        past_jug_poses = jnp.asarray(past_jug_poses).reshape(-1, 6)
+        jug_nodes_all = jax.vmap(
+                            lambda pose: pouring_env.transform_mesh_to_local_coordinates(
+                                self.jug_vertices,
+                                pose[:3],
+                                ref_orientation=pose[3:],
+                            )
+                        )(past_jug_poses)
+        
+        next_mesh_position = prev_mesh_position[0]   # (N, L)
+        next_mesh_pose = prev_mesh_pose[0]           # (P, L)
+
+        next_mesh_position = next_mesh_position.at[
+                : self.config_dict["jug_vertices_count"], :
+            ].set(jug_nodes_all.T)
+        
+        next_mesh_pose = next_mesh_pose.at[0, :].set(past_jug_poses)
+
+        next_mesh_position_padded = prev_mesh_position.at[0].set(next_mesh_position)
+        next_mesh_pose_padded = prev_mesh_pose.at[0].set(next_mesh_pose)
+
+        input_graph_local.nodes["mesh_position"] = next_mesh_position_padded
+        input_graph_local.nodes["mesh_pose"] = next_mesh_pose_padded
+
+        # do the updating for the liquid positions (1047x3 for each timestep -> what about that last particle?
+        # past_particle_positions = (batch, time, n_particles, xyz)
+        """# past_particle_positions = (batch, time, n_particles, xyz)
+        past_particle_positions = jnp.stack(past_particle_positions, axis=0)
+
+        total_nodes = jnp.sum(self.input_graph.n_node[:-1])
+
+        # Flatten batch + particle → nodes
+        # New shape → (nodes, time, xyz)
+        past_particle_positions = past_particle_positions.reshape(
+            -1,
+            past_particle_positions.shape[1],
+            past_particle_positions.shape[3]
+        )
+
+        # Ensure sequence dimension ordering is (nodes, time, xyz)
+        past_particle_positions = jnp.transpose(past_particle_positions, (0, 1, 2))
+
+        # Copy previous tensor
+        next_pos_seq = prev_liq_position
+
+        # Assign only valid nodes
+        next_pos_seq = next_pos_seq.at[:total_nodes, :, :].set(
+            past_particle_positions[:total_nodes, :, :]
+        )
+
+        # Optional strict masking
+        node_padding_mask = jnp.arange(prev_liq_position.shape[0]) < total_nodes
+
+        next_pos_seq = jnp.where(
+            node_padding_mask[:, None, None],
+            next_pos_seq,
+            prev_liq_position
+        )"""
+        # past_particle_positions = (batch, time, n_particles, xyz) 
+        past_particle_positions = jnp.stack(past_particle_positions, axis=0) 
+
+        total_nodes = jnp.sum(input_graph_local.n_node[:-1]) 
+        node_padding_mask = jnp.arange(prev_liq_position.shape[0]) < total_nodes 
+
+        # transpose to match (nodes, time, 3) # from (L, N, 3) → (N, L, 3) 
+        past_particle_positions = jnp.transpose(past_particle_positions, (1, 0, 2)) 
+
+        # start from previous tensor (keeps padding untouched initially) 
+        next_pos_seq = prev_liq_position # fill only valid (non-padded) nodes
+
+        mask = jnp.arange(past_particle_positions.shape[0]) < total_nodes
+
+        past_particles_masked = jnp.where(
+            mask[:, None, None],
+            past_particle_positions,
+            jnp.zeros_like(past_particle_positions)
+        )
+
+        next_pos_seq = jax.lax.dynamic_update_slice(
+            next_pos_seq,
+            past_particles_masked,
+            (0, 0, 0)
+        )
+
+        # alternatively using mask (if you prefer strict masking) 
+        next_pos_seq = jnp.where( 
+            node_padding_mask[:, None, None], next_pos_seq, prev_liq_position
+        )
+
+        # update graph
+        input_graph_local.nodes["liq_position"] = next_pos_seq
+
+        """with open("new_input_graph.pkl", "wb") as f:
+            pickle.dump(self.input_graph.nodes, f)"""
+
+        (_, dict_latent_graphs), _ = self._fast_apply(
+            self.network_params["params"], self.network_params["state"], input_graph_local
+        )
+
+        latent_liquid_representation = dict_latent_graphs[
+            "latent_graph_before_decoding"
+        ].nodes[
+            "v_l"
+        ]  # latent representation of liquid particles after processing step of model
+        del input_graph_local
+        return latent_liquid_representation
+
+    def _load_gnn_model(
+        self,
+        model_path,
+        connectivity_radius,
+        collision_mesh_info_list,
+        max_nodes_edges_info,
+    ):
+        """
+        Load the GNN model for the environment.
+        Returns:
+            model: Loaded GNN model.
+        """
+        graph_network_kwargs = dict(
+            include_sent_messages_in_node_update=False,
+            latent_size=128,
+            mlp_hidden_size=128,
+            mlp_num_hidden_layers=2,
+            num_message_passing_steps=10,
+            node_types=["v_l", "v_m", "v_o"],
+            edge_types=["e_l", "e_mo", "e_om", "e_ol"],
+            use_layer_norm=True,
+        )
+        model_kwargs = {"graph_network_kwargs": graph_network_kwargs}
+        flatten_kwargs = {"apply_normalization": True}
+
+        flatten_fn = functools.partial(model_utils.flatten_features, **flatten_kwargs)
+        haiku_model = functools.partial(
+            learned_simulator.LearnedSimulator,
+            connectivity_radius=connectivity_radius,
+            collision_mesh_info_lists=[
+                collision_mesh_info_list,
+            ],
+            max_nodes_edges_info=max_nodes_edges_info,
+            flatten_features_fn=flatten_fn,
+            **model_kwargs,
+        )
+
+        model = hk.without_apply_rng(
+            hk.transform_with_state(lambda x: haiku_model()(x))
+        )
+        network_params = self._load_network_params(model_path)["network"]
+        print(f"Loading gnn model at path: {model_path}")
+
+        return model, network_params
+
+    def _load_network_params(self, model_path):
+        """
+        Load the network parameters from a file.
+        Args:
+            model_path: Path to the model file.
+        Returns:
+            network_params: Loaded network parameters.
+        """
+        # taken from MPC file (-> see load_model)
+        with open(model_path, "rb") as f:
+            numpy_params = pickle.load(f)
+        return jax.tree_util.tree_map(lambda x: jnp.array(x), numpy_params)
+
+    def _read_metadata(self, data_path):
+        with open(os.path.join(data_path, "metadata.json"), "rt") as fp:
+            return json.loads(fp.read())
+
+    def _read_mesh_vertices(self, mesh_path):
+        mesh = o3d.io.read_triangle_mesh(mesh_path)
+        vertices = np.asarray(mesh.vertices)
+        scale_factor = 10  # isaac is 10x reality
+        return jnp.array(vertices * scale_factor)
+
 """
 # with jug and gaze action together
 class Actor(nn.Module):
@@ -364,7 +754,7 @@ class QNetwork(nn.Module):
         return x
 """
 
-
+"""
 # for visual processing (without gaze)
 class Actor(nn.Module):
     action_dim: int
@@ -433,8 +823,8 @@ class QNetwork(nn.Module):
         x = nn.Dense(1)(x)
         return x
 """
-
-# without visual processing
+"""
+# visual processing with multiple frames
 class Actor(nn.Module):
     action_dim: int
     action_scale: jnp.ndarray
@@ -442,15 +832,130 @@ class Actor(nn.Module):
 
     @nn.compact
     def __call__(self, flat_obs):
+
+        # Expect 4 stacked frames
+        img_flat = flat_obs   # no jug anymore
+
+        # Encode stacked frames
+        img_emb = ImageEncoderMultiple(num_frames=4)(img_flat)
+
+        trunk = img_emb
+
+        x = nn.Dense(256)(trunk)
+        x = nn.relu(x)
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        action = nn.tanh(nn.Dense(self.action_dim)(x))
+
+        return action * self.action_scale + self.action_bias
+
+class QNetwork(nn.Module):
+
+    @nn.compact
+    def __call__(self, flat_obs, action):
+
+        # Entire observation is stacked frames now
+        img_flat = flat_obs
+
+        # Encode frames
+        img_emb = ImageEncoderMultiple(num_frames=4)(img_flat)
+
+        # Combine with action
+        x = jnp.concatenate([img_emb, action], axis=-1)
+
+        # Q MLP
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+
+        q = nn.Dense(1)(x)
+        return q
+
+"""
+# without visual processing
+class Actor(nn.Module):
+    action_dim: int
+    action_scale: jnp.ndarray
+    action_bias: jnp.ndarray
+    gnn: nn.Module
+
+    @nn.compact
+    def __call__(self, flat_obs):
+        BASE_SIZE = 19
+        LIQ_CUR_SIZE = 1047 * 9
+        JUG_BUF_SIZE = 6 * 6
+        PT_BUF_SIZE  = 6 * 1047 * 3
         # Split flat observation
-        jug_obs = flat_obs[:, :19]
-        particle_flat = flat_obs[:, 19:]
+        jug_obs = flat_obs[:, :BASE_SIZE]
+        start = BASE_SIZE
+        end = start + LIQ_CUR_SIZE
+        particle_flat = flat_obs[:, start:end]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))
+
+        start = end
+        gnn_output_flat = flat_obs[:, start:]
+        gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
+
+        """# Jug buffer (6 x 6)
+        start = end
+        end = start + JUG_BUF_SIZE
+        jug_buffer_flat = flat_obs[:, start:end]
+
+        jug_buffer = jug_buffer_flat.reshape(
+            flat_obs.shape[0], 6, 6
+        )"""
+        """# add the current jug pose to the buffer (needs the reconstruction of the rotation vector from the rotation matrix)
+        # Take first 12 values
+        jug_obs_12 = jug_obs[:, :12]
+
+        # Split position + rotation matrix
+        pos = jug_obs_12[:, :3]              # (batch, 3)
+        rot_flat = jug_obs_12[:, 3:12]       # (batch, 9)
+
+        # Convert rotation matrix back to rotation vector
+        rot_mat = rot_flat.reshape(-1, 3, 3)
+        rot_vec = R.from_matrix(rot_mat).as_rotvec()   # (batch, 3)
+
+        # Combine into new 6-value representation
+        jug_new = np.concatenate([pos, rot_vec], axis=1)   # (batch, 6)
+
+        # Append to right side of jug buffer
+        jug_buffer = np.concatenate([jug_buffer, jug_new[:, None, :]], axis=1)
+        """
+        """# Particle buffer (6 x N x 3)
+        start = end
+        end = start + PT_BUF_SIZE
+        pt_buffer_flat = flat_obs[:, start:end]
+
+        pt_buffer = pt_buffer_flat.reshape(
+            flat_obs.shape[0], 6, -1, 3
+        )"""
+        """# add the current particle positions to the buffer (remove velocity and acc, keep only x,y,z)
+        # Extract x,y,z (first 3 values) from each particle
+        particles_xyz = particles[..., :3]   # shape: (batch, num_particles, 3)
+        # Add particle-slot dimension
+        particles_xyz = particles_xyz[:, None, :, :]   # (batch, 1, M, 3)
+
+        # Append to the right side of the buffer
+        pt_buffer = np.concatenate([pt_buffer, particles_xyz], axis=1)"""
+
+        """gnn_output = gnn._apply_gnn_processing_step(
+            jug_buffer, pt_buffer)"""
+        
+        """batched_gnn_fn = jax.vmap(
+            gnn._apply_gnn_processing_step,
+            in_axes=(0, 0)   # map over batch dimension of both inputs
+        )
+
+        gnn_output = batched_gnn_fn(jug_buffer, pt_buffer)"""
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
-        liquid_emb = ParticleEncoder()(particles)
+        #liquid_emb = ParticleEncoder()(particles)
+        liquid_emb = ParticleEncoder()(gnn_output)
 
         # Combine and pass through actor MLP
         x = jnp.concatenate([jug_emb, liquid_emb], axis=-1)
@@ -464,17 +969,83 @@ class Actor(nn.Module):
 
 
 class QNetwork(nn.Module):
+    gnn: nn.Module
+
     @nn.compact
     def __call__(self, flat_obs, action):
+        BASE_SIZE = 19
+        LIQ_CUR_SIZE = 1047 * 9
+        JUG_BUF_SIZE = 6 * 6
+        PT_BUF_SIZE  = 6 * 1047 * 3
         # Split flat observation
-        jug_obs = flat_obs[:, :19]
-        particle_flat = flat_obs[:, 19:]
+        jug_obs = flat_obs[:, :BASE_SIZE]
+        start = BASE_SIZE
+        end = start + LIQ_CUR_SIZE
+        particle_flat = flat_obs[:, start:end]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], 1047, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))
+
+        start = end
+        gnn_output_flat = flat_obs[:, start:]
+        gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
+
+        """# Jug buffer (6 x 6)
+        start = end
+        end = start + JUG_BUF_SIZE
+        jug_buffer_flat = flat_obs[:, start:end]
+
+        jug_buffer = jug_buffer_flat.reshape(
+            flat_obs.shape[0], 6, 6
+        )"""
+        """# add the current jug pose to the buffer (needs the reconstruction of the rotation vector from the rotation matrix)
+        # Take first 12 values
+        jug_obs_12 = jug_obs[:, :12]
+
+        # Split position + rotation matrix
+        pos = jug_obs_12[:, :3]              # (batch, 3)
+        rot_flat = jug_obs_12[:, 3:12]       # (batch, 9)
+
+        # Convert rotation matrix back to rotation vector
+        rot_mat = rot_flat.reshape(-1, 3, 3)
+        rot_vec = R.from_matrix(rot_mat).as_rotvec()   # (batch, 3)
+
+        # Combine into new 6-value representation
+        jug_new = np.concatenate([pos, rot_vec], axis=1)   # (batch, 6)
+
+        # Append to right side of jug buffer
+        jug_buffer = np.concatenate([jug_buffer, jug_new[:, None, :]], axis=1)
+        """
+        """# Particle buffer (6 x N x 3)
+        start = end
+        end = start + PT_BUF_SIZE
+        pt_buffer_flat = flat_obs[:, start:end]
+
+        pt_buffer = pt_buffer_flat.reshape(
+            flat_obs.shape[0], 6, -1, 3
+        )"""
+        """# add the current particle positions to the buffer (remove velocity and acc, keep only x,y,z)
+        # Extract x,y,z (first 3 values) from each particle
+        particles_xyz = particles[..., :3]   # shape: (batch, num_particles, 3)
+        # Add particle-slot dimension
+        particles_xyz = particles_xyz[:, None, :, :]   # (batch, 1, M, 3)
+
+        # Append to the right side of the buffer
+        pt_buffer = np.concatenate([pt_buffer, particles_xyz], axis=1)"""
+
+        """gnn_output = gnn._apply_gnn_processing_step(
+            jug_buffer, pt_buffer)"""
+        
+        """batched_gnn_fn = jax.vmap(
+            gnn._apply_gnn_processing_step,
+            in_axes=(0, 0)   # map over batch dimension of both inputs
+        )
+
+        gnn_output = batched_gnn_fn(jug_buffer, pt_buffer)"""
 
         # Encode
         jug_emb = JugEncoder()(jug_obs)
-        liquid_emb = ParticleEncoder()(particles)
+        #liquid_emb = ParticleEncoder()(particles)
+        liquid_emb = ParticleEncoder()(gnn_output)
 
         # Combine with action
         x = jnp.concatenate([jug_emb, liquid_emb, action], axis=-1)
@@ -484,7 +1055,7 @@ class QNetwork(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(1)(x)
         return x
-"""
+
 
 class TrainState(TrainState):
     target_params: flax.core.FrozenDict
@@ -552,6 +1123,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         "data_path": args.data_path,
         "target_particles_path": args.target_particles_path,
         "reward_weights": reward_weights,
+        "clear_cache_bool" : True,
         }
 
     if "Isaac" not in args.env_id:
@@ -574,10 +1146,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
 
+    """gnn_model_path = '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl'
+    data_path = "/home/carola/masterthesis/Pouring_mpc_1D_1902"#'/shared_data/Pouring_mpc_1D_1902/'
+
+    gnn = GNNEncoder(gnn_model_path=gnn_model_path, data_path=data_path)"""
+
     actor = Actor(
         action_dim=np.prod(envs.single_action_space.shape),
         action_scale=jnp.array((envs.action_space.high - envs.action_space.low) / 2.0),
         action_bias=jnp.array((envs.action_space.high + envs.action_space.low) / 2.0),
+        gnn=None,
     )
     actor_state = TrainState.create(
         apply_fn=actor.apply,
@@ -585,7 +1163,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         target_params=actor.init(actor_key, obs),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
-    qf = QNetwork()
+    qf = QNetwork(gnn=None)
     qf1_state = TrainState.create(
         apply_fn=qf.apply,
         params=qf.init(qf1_key, obs, envs.action_space.sample()),
@@ -733,11 +1311,21 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 args.max_signal_noise,
             )
 
+            """
+            # original Normal noise (over- and undershoot)
             execution_noise = np.random.normal(
                 loc=0.0,
                 scale=noise_scale,
                 size=actions_det.shape,
-            )
+            )"""
+
+            # Signal-dependent log-normal motor noise (biologically inspired)
+            # Sample multiplicative log-noise
+            epsilon = np.abs(np.random.normal(0.0, noise_scale, actions_det.shape))
+            actions_exec = actions_det * (1.0 + epsilon)
+
+            # Execution noise (if you still want it separated)
+            execution_noise = actions_exec - actions_det
             """if global_step < args.learning_starts + args.exploration_warmup_steps:
                 # Signal-INDEPENDENT noise during warmup
                 noise = np.random.normal(

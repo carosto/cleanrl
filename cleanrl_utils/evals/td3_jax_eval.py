@@ -100,11 +100,21 @@ def evaluate(
             max_signal_noise,
         )
 
+        """
+        # original Normal noise (over- and undershoot)
         execution_noise = np.random.normal(
             loc=0.0,
             scale=noise_scale,
             size=actions_det.shape,
         )
+        """
+        # Signal-dependent log-normal motor noise (biologically inspired)
+        # Sample multiplicative log-noise
+        epsilon = np.abs(np.random.normal(0.0, noise_scale, actions_det.shape))
+        actions_exec = actions_det * (1.0 + epsilon)
+
+        # Execution noise (if you still want it separated)
+        execution_noise = actions_exec - actions_det
 
         actions = actions_det + expl_noise + execution_noise
 
@@ -226,7 +236,7 @@ if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
     import json
 
-    run_nr = "1769605845_c84da4"
+    run_nr = "1772070329_061d1b"
     run_name= f"PouringEnvIsaac-v0__td3_continuous_action_jax__42__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
     #run_name = "PouringEnvIsaacVisual-v0__td3_continuous_action_jax__42__1761689808_403a80"
@@ -264,7 +274,7 @@ if __name__ == "__main__":
         model_path,
         make_env,
         hyperparams["env_id"],
-        eval_episodes=1,
+        eval_episodes=2,
         run_name=f"{run_name}-eval_3",
         Model=(Actor, QNetwork),
         exploration_noise=0,#hyperparams["exploration_noise"],

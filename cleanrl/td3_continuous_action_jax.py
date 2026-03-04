@@ -178,6 +178,24 @@ class QNetwork(nn.Module):
         x = nn.Dense(1)(x)
         return x"""
 
+def unpack_obs(flat_obs):
+    # Adjust sizes according to your environment
+    BASE_SIZE = 19
+    LIQ_CUR_SIZE = 1047 * 9
+    JUG_BUF_SIZE = 36
+    PT_BUF_SIZE  = 6 * 1047 * 3
+    
+    jug_obs = flat_obs[:, :BASE_SIZE]
+    
+    start = BASE_SIZE + LIQ_CUR_SIZE
+    end = start + JUG_BUF_SIZE
+    jug_buffer = flat_obs[:, start:end].reshape(-1, 6, 6)
+    
+    start = end
+    end = start + PT_BUF_SIZE
+    pt_buffer = flat_obs[:, start:end].reshape(-1, 6, 1047, 3)
+    
+    return jug_obs, jug_buffer, pt_buffer
 
 # networks for full state
 # JugEncoder and ParticleEncoder are shared between actor and critic.
@@ -879,86 +897,12 @@ class Actor(nn.Module):
     action_dim: int
     action_scale: jnp.ndarray
     action_bias: jnp.ndarray
-    #gnn: nn.Module
 
     @nn.compact
-    def __call__(self, flat_obs):
-        BASE_SIZE = 19
-        LIQ_CUR_SIZE = 1047 * 9
-        JUG_BUF_SIZE = 6 * 6
-        PT_BUF_SIZE  = 6 * 1047 * 3
-        # Split flat observation
-        jug_obs = flat_obs[:, :BASE_SIZE]
-        """start = BASE_SIZE
-        end = start + LIQ_CUR_SIZE
-        particle_flat = flat_obs[:, start:end]
-        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))"""
-
-        #start = end
-        #gnn_output_flat = flat_obs[:, start:]
-        gnn_output_flat = flat_obs[:, BASE_SIZE:]
-        gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
-
-        """# Jug buffer (6 x 6)
-        start = end
-        end = start + JUG_BUF_SIZE
-        jug_buffer_flat = flat_obs[:, start:end]
-
-        jug_buffer = jug_buffer_flat.reshape(
-            flat_obs.shape[0], 6, 6
-        )"""
-        """# add the current jug pose to the buffer (needs the reconstruction of the rotation vector from the rotation matrix)
-        # Take first 12 values
-        jug_obs_12 = jug_obs[:, :12]
-
-        # Split position + rotation matrix
-        pos = jug_obs_12[:, :3]              # (batch, 3)
-        rot_flat = jug_obs_12[:, 3:12]       # (batch, 9)
-
-        # Convert rotation matrix back to rotation vector
-        rot_mat = rot_flat.reshape(-1, 3, 3)
-        rot_vec = R.from_matrix(rot_mat).as_rotvec()   # (batch, 3)
-
-        # Combine into new 6-value representation
-        jug_new = np.concatenate([pos, rot_vec], axis=1)   # (batch, 6)
-
-        # Append to right side of jug buffer
-        jug_buffer = np.concatenate([jug_buffer, jug_new[:, None, :]], axis=1)
-        """
-        """# Particle buffer (6 x N x 3)
-        start = end
-        end = start + PT_BUF_SIZE
-        pt_buffer_flat = flat_obs[:, start:end]
-
-        pt_buffer = pt_buffer_flat.reshape(
-            flat_obs.shape[0], 6, -1, 3
-        )"""
-        """# add the current particle positions to the buffer (remove velocity and acc, keep only x,y,z)
-        # Extract x,y,z (first 3 values) from each particle
-        particles_xyz = particles[..., :3]   # shape: (batch, num_particles, 3)
-        # Add particle-slot dimension
-        particles_xyz = particles_xyz[:, None, :, :]   # (batch, 1, M, 3)
-
-        # Append to the right side of the buffer
-        pt_buffer = np.concatenate([pt_buffer, particles_xyz], axis=1)"""
-
-        """gnn_output = gnn._apply_gnn_processing_step(
-            jug_buffer, pt_buffer)"""
-        
-        """batched_gnn_fn = jax.vmap(
-            gnn._apply_gnn_processing_step,
-            in_axes=(0, 0)   # map over batch dimension of both inputs
-        )
-
-        gnn_output = batched_gnn_fn(jug_buffer, pt_buffer)"""
-
-        # Encode
+    def __call__(self, jug_obs, gnn_latents):
         jug_emb = JugEncoder()(jug_obs)
-        #liquid_emb = ParticleEncoder()(particles)
-        liquid_emb = ParticleEncoder()(gnn_output)
+        liquid_emb = ParticleEncoder()(gnn_latents) # gnn_latents shape: (batch, 1048, 128)
 
-        # Combine and pass through actor MLP
         x = jnp.concatenate([jug_emb, liquid_emb], axis=-1)
         x = nn.Dense(256)(x)
         x = nn.relu(x)
@@ -968,88 +912,12 @@ class Actor(nn.Module):
         x = nn.tanh(x)
         return x * self.action_scale + self.action_bias
 
-
 class QNetwork(nn.Module):
-    #gnn: nn.Module
-
     @nn.compact
-    def __call__(self, flat_obs, action):
-        BASE_SIZE = 19
-        LIQ_CUR_SIZE = 1047 * 9
-        JUG_BUF_SIZE = 6 * 6
-        PT_BUF_SIZE  = 6 * 1047 * 3
-        # Split flat observation
-        jug_obs = flat_obs[:, :BASE_SIZE]
-        """start = BASE_SIZE
-        end = start + LIQ_CUR_SIZE
-        particle_flat = flat_obs[:, start:end]
-        #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))"""
-
-        #start = end
-        #gnn_output_flat = flat_obs[:, start:]
-        gnn_output_flat = flat_obs[:, BASE_SIZE:]
-        gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
-
-        """# Jug buffer (6 x 6)
-        start = end
-        end = start + JUG_BUF_SIZE
-        jug_buffer_flat = flat_obs[:, start:end]
-
-        jug_buffer = jug_buffer_flat.reshape(
-            flat_obs.shape[0], 6, 6
-        )"""
-        """# add the current jug pose to the buffer (needs the reconstruction of the rotation vector from the rotation matrix)
-        # Take first 12 values
-        jug_obs_12 = jug_obs[:, :12]
-
-        # Split position + rotation matrix
-        pos = jug_obs_12[:, :3]              # (batch, 3)
-        rot_flat = jug_obs_12[:, 3:12]       # (batch, 9)
-
-        # Convert rotation matrix back to rotation vector
-        rot_mat = rot_flat.reshape(-1, 3, 3)
-        rot_vec = R.from_matrix(rot_mat).as_rotvec()   # (batch, 3)
-
-        # Combine into new 6-value representation
-        jug_new = np.concatenate([pos, rot_vec], axis=1)   # (batch, 6)
-
-        # Append to right side of jug buffer
-        jug_buffer = np.concatenate([jug_buffer, jug_new[:, None, :]], axis=1)
-        """
-        """# Particle buffer (6 x N x 3)
-        start = end
-        end = start + PT_BUF_SIZE
-        pt_buffer_flat = flat_obs[:, start:end]
-
-        pt_buffer = pt_buffer_flat.reshape(
-            flat_obs.shape[0], 6, -1, 3
-        )"""
-        """# add the current particle positions to the buffer (remove velocity and acc, keep only x,y,z)
-        # Extract x,y,z (first 3 values) from each particle
-        particles_xyz = particles[..., :3]   # shape: (batch, num_particles, 3)
-        # Add particle-slot dimension
-        particles_xyz = particles_xyz[:, None, :, :]   # (batch, 1, M, 3)
-
-        # Append to the right side of the buffer
-        pt_buffer = np.concatenate([pt_buffer, particles_xyz], axis=1)"""
-
-        """gnn_output = gnn._apply_gnn_processing_step(
-            jug_buffer, pt_buffer)"""
-        
-        """batched_gnn_fn = jax.vmap(
-            gnn._apply_gnn_processing_step,
-            in_axes=(0, 0)   # map over batch dimension of both inputs
-        )
-
-        gnn_output = batched_gnn_fn(jug_buffer, pt_buffer)"""
-
-        # Encode
+    def __call__(self, jug_obs, gnn_latents, action):
         jug_emb = JugEncoder()(jug_obs)
-        #liquid_emb = ParticleEncoder()(particles)
-        liquid_emb = ParticleEncoder()(gnn_output)
+        liquid_emb = ParticleEncoder()(gnn_latents)
 
-        # Combine with action
         x = jnp.concatenate([jug_emb, liquid_emb, action], axis=-1)
         x = nn.Dense(256)(x)
         x = nn.relu(x)
@@ -1153,28 +1021,68 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     gnn = GNNEncoder(gnn_model_path=gnn_model_path, data_path=data_path)"""
 
+    # Before entering the training loop, initialize the GNN
+    gnn = GNNEncoder(gnn_model_path=args.gnn_model_path, data_path=args.data_path)
+    base_graph = gnn.input_graph
+    gnn_params = gnn.network_params["params"]
+    gnn_state = gnn.network_params["state"]
+
+    # --- Chunking-Version von batched_gnn_forward ---
+    @jax.jit
+    def batched_gnn_forward(jug_hist_batch, pt_hist_batch):
+        batch_size = jug_hist_batch.shape[0]
+        
+        if batch_size <= 128:
+            return jax.vmap(gnn._apply_gnn_processing_step)(jug_hist_batch, pt_hist_batch)
+        
+        chunk_size = 128
+        num_chunks = batch_size // chunk_size
+        
+        jug_chunks = jug_hist_batch.reshape((num_chunks, chunk_size) + jug_hist_batch.shape[1:])
+        pt_chunks = pt_hist_batch.reshape((num_chunks, chunk_size) + pt_hist_batch.shape[1:])
+        
+        chunk_vmap = jax.vmap(gnn._apply_gnn_processing_step)
+        
+        # lax.scan ist wesentlich schneller als lax.map für solche Operationen!
+        def scan_step(carry, chunk_args):
+            j_chunk, p_chunk = chunk_args
+            return None, chunk_vmap(j_chunk, p_chunk)
+            
+        _, out_chunks = jax.lax.scan(scan_step, None, (jug_chunks, pt_chunks))
+        
+        return out_chunks.reshape((batch_size, *out_chunks.shape[2:]))
+
+    # --- NEU: Initiale Beobachtung entpacken und GNN Latents berechnen ---
+    obs_jug_init, obs_jug_buf_init, obs_pt_buf_init = unpack_obs(jnp.array(obs))
+    init_gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf_init, obs_pt_buf_init))
+    # ---------------------------------------------------------------------
+
     actor = Actor(
         action_dim=np.prod(envs.single_action_space.shape),
         action_scale=jnp.array((envs.action_space.high - envs.action_space.low) / 2.0),
         action_bias=jnp.array((envs.action_space.high + envs.action_space.low) / 2.0),
     )
+    
     actor_state = TrainState.create(
         apply_fn=actor.apply,
-        params=actor.init(actor_key, obs),
-        target_params=actor.init(actor_key, obs),
+        # BEIDE initialen Variablen übergeben:
+        params=actor.init(actor_key, obs_jug_init, init_gnn_latents),
+        target_params=actor.init(actor_key, obs_jug_init, init_gnn_latents),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
+    
     qf = QNetwork()
     qf1_state = TrainState.create(
         apply_fn=qf.apply,
-        params=qf.init(qf1_key, obs, envs.action_space.sample()),
-        target_params=qf.init(qf1_key, obs, envs.action_space.sample()),
+        # Auch das QNetwork braucht jetzt beide Variablen plus die Action:
+        params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
+        target_params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
     qf2_state = TrainState.create(
         apply_fn=qf.apply,
-        params=qf.init(qf2_key, obs, envs.action_space.sample()),
-        target_params=qf.init(qf2_key, obs, envs.action_space.sample()),
+        params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
+        target_params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
     actor.apply = jax.jit(actor.apply)
@@ -1185,69 +1093,36 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         actor_state: TrainState,
         qf1_state: TrainState,
         qf2_state: TrainState,
-        observations: np.ndarray,
+        obs_jug: jnp.ndarray,           # <-- Neu
+        gnn_latents: jnp.ndarray,       # <-- Neu
         actions: np.ndarray,
-        next_observations: np.ndarray,
+        next_jug: jnp.ndarray,          # <-- Neu
+        next_gnn_latents: jnp.ndarray,  # <-- Neu
         rewards: np.ndarray,
         terminations: np.ndarray,
         key: jnp.ndarray,
     ):
-        # TODO Maybe pre-generate a lot of random keys
-        # also check https://jax.readthedocs.io/en/latest/jax.random.html
         key, noise_key = jax.random.split(key, 2)
         
-        # with signal independent noise
-        clipped_noise = (
-            jnp.clip(
-                (jax.random.normal(noise_key, actions.shape) * args.policy_noise),
-                -args.noise_clip,
-                args.noise_clip,
-            )
-            * actor.action_scale
-        ) # this is signal-independent noise (independent of action magnitude)
+        # HIER KEIN GNN MEHR AUFRUFEN! Einfach direkt die übergebenen Variablen nutzen:
+        clipped_noise = jnp.clip((jax.random.normal(noise_key, actions.shape) * args.policy_noise), -args.noise_clip, args.noise_clip) * actor.action_scale
         next_state_actions = jnp.clip(
-            actor.apply(actor_state.target_params, next_observations) + clipped_noise,
-            envs.single_action_space.low,
-            envs.single_action_space.high,
+            actor.apply(actor_state.target_params, next_jug, next_gnn_latents) + clipped_noise,
+            envs.single_action_space.low, envs.single_action_space.high
         )
-        """
-        # with action-dependent noise
-        action = actor.apply(actor_state.target_params, next_observations)
 
-        # variance matching
-        abs_action = jnp.abs(action)
-        scale = abs_action / (jnp.mean(abs_action) + 1e-6)
-
-        noise = (
-            jax.random.normal(noise_key, action.shape)
-            * args.policy_noise
-            * scale
-        )
-    
-        # different scaling attempt
-        #scale = jnp.maximum(1.0, jnp.abs(action))
-        #noise = jax.random.normal(noise_key, action.shape) * args.policy_noise * scale
-
-        noise = jnp.clip(noise, -args.noise_clip, args.noise_clip)
-    
-        next_state_actions = jnp.clip(
-            action + noise,
-            envs.single_action_space.low,
-            envs.single_action_space.high,
-        )
-        """
-
-        qf1_next_target = qf.apply(qf1_state.target_params, next_observations, next_state_actions).reshape(-1)
-        qf2_next_target = qf.apply(qf2_state.target_params, next_observations, next_state_actions).reshape(-1)
+        qf1_next_target = qf.apply(qf1_state.target_params, next_jug, next_gnn_latents, next_state_actions).reshape(-1)
+        qf2_next_target = qf.apply(qf2_state.target_params, next_jug, next_gnn_latents, next_state_actions).reshape(-1)
         min_qf_next_target = jnp.minimum(qf1_next_target, qf2_next_target)
         next_q_value = (rewards + (1 - terminations) * args.gamma * (min_qf_next_target)).reshape(-1)
 
         def mse_loss(params):
-            qf_a_values = qf.apply(params, observations, actions).squeeze()
+            qf_a_values = qf.apply(params, obs_jug, gnn_latents, actions).squeeze()
             return ((qf_a_values - next_q_value) ** 2).mean(), qf_a_values.mean()
 
         (qf1_loss_value, qf1_a_values), grads1 = jax.value_and_grad(mse_loss, has_aux=True)(qf1_state.params)
         (qf2_loss_value, qf2_a_values), grads2 = jax.value_and_grad(mse_loss, has_aux=True)(qf2_state.params)
+        
         qf1_state = qf1_state.apply_gradients(grads=grads1)
         qf2_state = qf2_state.apply_gradients(grads=grads2)
 
@@ -1258,10 +1133,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         actor_state: TrainState,
         qf1_state: TrainState,
         qf2_state: TrainState,
-        observations: np.ndarray,
+        obs_jug: jnp.ndarray,     # <-- Neu
+        gnn_latents: jnp.ndarray, # <-- Neu
     ):
+        # HIER EBENFALLS KEIN GNN MEHR!
         def actor_loss(params):
-            return -qf.apply(qf1_state.params, observations, actor.apply(params, observations)).mean()
+            actions = actor.apply(params, obs_jug, gnn_latents)
+            return -qf.apply(qf1_state.params, obs_jug, gnn_latents, actions).mean()
 
         actor_loss_value, grads = jax.value_and_grad(actor_loss)(actor_state.params)
         actor_state = actor_state.apply_gradients(grads=grads)
@@ -1287,7 +1165,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             
             # deterministic action from actor
             # signal-independent exploration noise 
-            actions_det = actor.apply(actor_state.params, obs)
+            obs_jug, obs_jug_buf, obs_pt_buf = unpack_obs(jnp.array(obs))
+            gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
+            actions_det = actor.apply(actor_state.params, obs_jug, gnn_latents)
             actions_det = np.array(jax.device_get(actions_det))
 
             expl_noise = np.random.normal(0, max_action * args.exploration_noise, size=envs.single_action_space.shape)
@@ -1407,30 +1287,47 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            # --- Dein aktuelles Sampling ---
             data = rb.sample(args.batch_size)
             obs_batch = jax.device_put(data.observations.numpy())
             next_obs_batch = jax.device_put(data.next_observations.numpy())
             actions_batch = jax.device_put(data.actions.numpy())
             rewards_batch = jax.device_put(data.rewards.flatten().numpy())
             dones_batch = jax.device_put(data.dones.flatten().numpy())
+
+            # --- NEU: Beobachtungen entpacken und GNN anwenden ---
+            # 1. Aktuelle Beobachtungen entpacken und Latents berechnen
+            obs_jug, obs_jug_buf, obs_pt_buf = unpack_obs(obs_batch)
+            gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
+            
+            # 2. Nächste Beobachtungen entpacken und Latents berechnen
+            next_jug, next_jug_buf, next_pt_buf = unpack_obs(next_obs_batch)
+            next_gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(next_jug_buf, next_pt_buf))
+            # -----------------------------------------------------
+
+            # --- 3. Den Critic updaten ---
             (qf1_state, qf2_state), (qf1_loss_value, qf2_loss_value), (qf1_a_values, qf2_a_values), key = update_critic(
-                actor_state,
-                qf1_state,
-                qf2_state,
-                obs_batch,
-                actions_batch,
-                next_obs_batch,
-                rewards_batch,
-                dones_batch,
-                key,
+                actor_state, 
+                qf1_state, 
+                qf2_state, 
+                obs_jug,             # Nutzt den isolierten Krug-Zustand
+                gnn_latents,         # Nutzt die vorberechneten GNN-Latents
+                actions_batch, 
+                next_jug,            # Nächster Krug-Zustand
+                next_gnn_latents,    # Nächste GNN-Latents
+                rewards_batch, 
+                dones_batch, 
+                key
             )
 
+            # --- 4. Den Actor updaten (verzögert) ---
             if global_step % args.policy_frequency == 0:
                 actor_state, (qf1_state, qf2_state), actor_loss_value = update_actor(
-                    actor_state,
-                    qf1_state,
-                    qf2_state,
-                    obs_batch,
+                    actor_state, 
+                    qf1_state, 
+                    qf2_state, 
+                    obs_jug,         # Wir recyclen die Krug-Daten...
+                    gnn_latents      # ...und die GNN-Latents! (Das spart massiv Zeit)
                 )
 
             if global_step % 100 == 0:

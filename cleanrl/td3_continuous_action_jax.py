@@ -879,7 +879,7 @@ class Actor(nn.Module):
     action_dim: int
     action_scale: jnp.ndarray
     action_bias: jnp.ndarray
-    gnn: nn.Module
+    #gnn: nn.Module
 
     @nn.compact
     def __call__(self, flat_obs):
@@ -889,14 +889,15 @@ class Actor(nn.Module):
         PT_BUF_SIZE  = 6 * 1047 * 3
         # Split flat observation
         jug_obs = flat_obs[:, :BASE_SIZE]
-        start = BASE_SIZE
+        """start = BASE_SIZE
         end = start + LIQ_CUR_SIZE
         particle_flat = flat_obs[:, start:end]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))"""
 
-        start = end
-        gnn_output_flat = flat_obs[:, start:]
+        #start = end
+        #gnn_output_flat = flat_obs[:, start:]
+        gnn_output_flat = flat_obs[:, BASE_SIZE:]
         gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
 
         """# Jug buffer (6 x 6)
@@ -969,7 +970,7 @@ class Actor(nn.Module):
 
 
 class QNetwork(nn.Module):
-    gnn: nn.Module
+    #gnn: nn.Module
 
     @nn.compact
     def __call__(self, flat_obs, action):
@@ -979,14 +980,15 @@ class QNetwork(nn.Module):
         PT_BUF_SIZE  = 6 * 1047 * 3
         # Split flat observation
         jug_obs = flat_obs[:, :BASE_SIZE]
-        start = BASE_SIZE
+        """start = BASE_SIZE
         end = start + LIQ_CUR_SIZE
         particle_flat = flat_obs[:, start:end]
         #particles = particle_flat.reshape((flat_obs.shape[0], 1048, 128))
-        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))
+        particles = particle_flat.reshape((flat_obs.shape[0], -1, 9))"""
 
-        start = end
-        gnn_output_flat = flat_obs[:, start:]
+        #start = end
+        #gnn_output_flat = flat_obs[:, start:]
+        gnn_output_flat = flat_obs[:, BASE_SIZE:]
         gnn_output = gnn_output_flat.reshape((flat_obs.shape[0], -1, 128))
 
         """# Jug buffer (6 x 6)
@@ -1123,7 +1125,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         "data_path": args.data_path,
         "target_particles_path": args.target_particles_path,
         "reward_weights": reward_weights,
-        "clear_cache_bool" : True,
+        "clear_cache_bool" : False,
         }
 
     if "Isaac" not in args.env_id:
@@ -1155,7 +1157,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         action_dim=np.prod(envs.single_action_space.shape),
         action_scale=jnp.array((envs.action_space.high - envs.action_space.low) / 2.0),
         action_bias=jnp.array((envs.action_space.high + envs.action_space.low) / 2.0),
-        gnn=None,
     )
     actor_state = TrainState.create(
         apply_fn=actor.apply,
@@ -1163,7 +1164,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         target_params=actor.init(actor_key, obs),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
-    qf = QNetwork(gnn=None)
+    qf = QNetwork()
     qf1_state = TrainState.create(
         apply_fn=qf.apply,
         params=qf.init(qf1_key, obs, envs.action_space.sample()),
@@ -1319,12 +1320,15 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 size=actions_det.shape,
             )"""
 
-            # Signal-dependent log-normal motor noise (biologically inspired)
-            # Sample multiplicative log-noise
-            epsilon = np.abs(np.random.normal(0.0, noise_scale, actions_det.shape))
-            actions_exec = actions_det * (1.0 + epsilon)
+            # Sample half-normal (always positive)
+            epsilon = np.abs(
+                np.random.normal(loc=0.0, scale=noise_scale, size=actions_det.shape)
+            )
 
-            # Execution noise (if you still want it separated)
+            # Add noise in direction of action sign (increases amplitude only)
+            actions_exec = actions_det + np.sign(actions_det) * epsilon
+
+            # Execution noise
             execution_noise = actions_exec - actions_det
             """if global_step < args.learning_starts + args.exploration_warmup_steps:
                 # Signal-INDEPENDENT noise during warmup
@@ -1404,15 +1408,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             data = rb.sample(args.batch_size)
+            obs_batch = jax.device_put(data.observations.numpy())
+            next_obs_batch = jax.device_put(data.next_observations.numpy())
+            actions_batch = jax.device_put(data.actions.numpy())
+            rewards_batch = jax.device_put(data.rewards.flatten().numpy())
+            dones_batch = jax.device_put(data.dones.flatten().numpy())
             (qf1_state, qf2_state), (qf1_loss_value, qf2_loss_value), (qf1_a_values, qf2_a_values), key = update_critic(
                 actor_state,
                 qf1_state,
                 qf2_state,
-                data.observations.numpy(),
-                data.actions.numpy(),
-                data.next_observations.numpy(),
-                data.rewards.flatten().numpy(),
-                data.dones.flatten().numpy(),
+                obs_batch,
+                actions_batch,
+                next_obs_batch,
+                rewards_batch,
+                dones_batch,
                 key,
             )
 
@@ -1421,7 +1430,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     actor_state,
                     qf1_state,
                     qf2_state,
-                    data.observations.numpy(),
+                    obs_batch,
                 )
 
             if global_step % 100 == 0:

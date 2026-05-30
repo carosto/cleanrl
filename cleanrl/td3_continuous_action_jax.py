@@ -684,6 +684,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         "distance_wgt": args.distance_wgt,
         "fovea_radius": args.fovea_radius,
         "time_penalty": args.time_penalty,
+        "fill_target_level" : None
     }
 
     env_kwargs = {

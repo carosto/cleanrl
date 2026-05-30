@@ -228,7 +228,7 @@ def evaluate(
                     records = []
 
         obs = next_obs
-
+    envs.close()
     return episodic_returns
 
 
@@ -236,52 +236,61 @@ if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
     import json
 
-    run_nr = "1772070329_061d1b"
-    run_name= f"PouringEnvIsaac-v0__td3_continuous_action_jax__42__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
+    #fill_targets = [x / 10 for x in range(2, 10)] # 0.2 to 0.9 in 0.1 increments
+    fill_targets = [0.25 + 0.1 * i for i in range(7)]
 
-    #run_name = "PouringEnvIsaacVisual-v0__td3_continuous_action_jax__42__1761689808_403a80"
-    #model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
-    model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
-    
-    with open(os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "hyperparameters.json"), "r") as f:
-        hyperparams = json.load(f)
+    with open("/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/test.txt", "r") as f:#test_diff_action_costs.txt
+        runs_ids = [line.strip().split("__")[-1] for line in f]
 
-    relevant_keys = [
-        "target_level_wgt",
-        "pt_cup_wgt",
-        "pt_flow_wgt",
-        "pt_spill_wgt",
-        "action_cost",
-        "jug_resting_wgt",
-        "jug_velocity_wgt",
-        "distance_wgt",
-        "fovea_radius",
-        "time_penalty",
-        ]
+    for current_fill_target in fill_targets:
+        for run_nr in runs_ids:
+        #run_nr = "1773629276_bc85d2"
+            run_name= f"PouringEnvIsaac-v0__td3_continuous_action_jax__42__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
-    reward_weights = {k: hyperparams[k] for k in relevant_keys if k in hyperparams}
+            #run_name = "PouringEnvIsaacVisual-v0__td3_continuous_action_jax__42__1761689808_403a80"
+            #model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
+            model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax.cleanrl_model")    
+            
+            with open(os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "hyperparameters.json"), "r") as f:
+                hyperparams = json.load(f)
 
-    env_kwargs = {
-        #"gnn_model_path": '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl',
-        "data_path": '/shared_data/Pouring_mpc_1D_1902/',
-        "reward_weights": reward_weights
-        }
-    
-    video_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/videos/")
-    rewards_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/saved_rewards/")
-      
-    evaluate(
-        model_path,
-        make_env,
-        hyperparams["env_id"],
-        eval_episodes=2,
-        run_name=f"{run_name}-eval_3",
-        Model=(Actor, QNetwork),
-        exploration_noise=0,#hyperparams["exploration_noise"],
-        signal_noise=hyperparams["signal_noise"],
-        min_signal_noise=hyperparams["min_signal_noise"],
-        max_signal_noise=hyperparams["max_signal_noise"],
-        env_kwargs=env_kwargs,
-        video_folder=video_folder,
-        rewards_folder=rewards_folder
-    )
+            relevant_keys = [
+                "target_level_wgt",
+                "pt_cup_wgt",
+                "pt_flow_wgt",
+                "pt_spill_wgt",
+                "action_cost",
+                "jug_resting_wgt",
+                "jug_velocity_wgt",
+                "distance_wgt",
+                "fovea_radius",
+                "time_penalty",
+                ]
+
+            reward_weights = {k: hyperparams[k] for k in relevant_keys if k in hyperparams}
+            reward_weights["fill_target_level"] = current_fill_target 
+
+            env_kwargs = {
+                #"gnn_model_path": '/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/models/sdf_fullpose_lessPt_2412/model_checkpoint_globalstep_1770053.pkl',
+                "data_path": '/shared_data/Pouring_mpc_1D_1902/',
+                "reward_weights": reward_weights
+                }
+            
+            video_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/videos/")
+            rewards_folder = os.path.abspath(f"/home/carola/masterthesis/cleanrl/cleanrl/outputs/saved_rewards/")
+            
+            evaluate(
+                model_path,
+                make_env,
+                hyperparams["env_id"],
+                eval_episodes=10,
+                run_name=f"{run_name}-eval_2_{current_fill_target}",
+                Model=(Actor, QNetwork),
+                exploration_noise=0,#hyperparams["exploration_noise"],
+                signal_noise=hyperparams["signal_noise"],
+                min_signal_noise=hyperparams["min_signal_noise"],
+                max_signal_noise=hyperparams["max_signal_noise"],
+                env_kwargs=env_kwargs,
+                video_folder=video_folder,
+                rewards_folder=rewards_folder
+            )

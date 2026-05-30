@@ -186,6 +186,7 @@ def unpack_obs(flat_obs):
     PT_BUF_SIZE  = 6 * 1047 * 3
     
     jug_obs = flat_obs[:, :BASE_SIZE]
+    target_level = flat_obs[:, BASE_SIZE-1:BASE_SIZE]
     
     start = BASE_SIZE + LIQ_CUR_SIZE
     end = start + JUG_BUF_SIZE
@@ -195,7 +196,7 @@ def unpack_obs(flat_obs):
     end = start + PT_BUF_SIZE
     pt_buffer = flat_obs[:, start:end].reshape(-1, 6, 1047, 3)
     
-    return jug_obs, jug_buffer, pt_buffer
+    return jug_obs, jug_buffer, pt_buffer, target_level
 
 # networks for full state
 # JugEncoder and ParticleEncoder are shared between actor and critic.
@@ -586,8 +587,13 @@ class GNNEncoder():
         ].nodes[
             "v_l"
         ]  # latent representation of liquid particles after processing step of model
+        latent_jug_representation = dict_latent_graphs[
+            "latent_graph_before_decoding"
+        ].nodes[
+            "v_o"
+        ][0,:]  # latent representation of liquid particles after processing step of model
         del input_graph_local
-        return latent_liquid_representation
+        return latent_liquid_representation, latent_jug_representation
 
     def _load_gnn_model(
         self,
@@ -899,7 +905,8 @@ class Actor(nn.Module):
     action_bias: jnp.ndarray
 
     @nn.compact
-    def __call__(self, jug_obs, gnn_latents):
+    def __call__(self, jug_obs, gnn_latents, target_level):
+        jug_obs = jnp.concatenate([jug_obs, target_level], axis=-1)
         jug_emb = JugEncoder()(jug_obs)
         liquid_emb = ParticleEncoder()(gnn_latents) # gnn_latents shape: (batch, 1048, 128)
 
@@ -914,7 +921,8 @@ class Actor(nn.Module):
 
 class QNetwork(nn.Module):
     @nn.compact
-    def __call__(self, jug_obs, gnn_latents, action):
+    def __call__(self, jug_obs, gnn_latents, target_level, action):
+        jug_obs = jnp.concatenate([jug_obs, target_level], axis=-1)
         jug_emb = JugEncoder()(jug_obs)
         liquid_emb = ParticleEncoder()(gnn_latents)
 
@@ -1053,8 +1061,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         return out_chunks.reshape((batch_size, *out_chunks.shape[2:]))
 
     # --- NEU: Initiale Beobachtung entpacken und GNN Latents berechnen ---
-    obs_jug_init, obs_jug_buf_init, obs_pt_buf_init = unpack_obs(jnp.array(obs))
-    init_gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf_init, obs_pt_buf_init))
+    obs_jug_init, obs_jug_buf_init, obs_pt_buf_init, target_level_init = unpack_obs(jnp.array(obs))
+    init_gnn_latents, obs_jug_init = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf_init, obs_pt_buf_init))
     # ---------------------------------------------------------------------
 
     actor = Actor(
@@ -1066,8 +1074,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     actor_state = TrainState.create(
         apply_fn=actor.apply,
         # BEIDE initialen Variablen übergeben:
-        params=actor.init(actor_key, obs_jug_init, init_gnn_latents),
-        target_params=actor.init(actor_key, obs_jug_init, init_gnn_latents),
+        params=actor.init(actor_key, obs_jug_init, init_gnn_latents, target_level_init),
+        target_params=actor.init(actor_key, obs_jug_init, init_gnn_latents, target_level_init),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
     
@@ -1075,14 +1083,14 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     qf1_state = TrainState.create(
         apply_fn=qf.apply,
         # Auch das QNetwork braucht jetzt beide Variablen plus die Action:
-        params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
-        target_params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
+        params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, target_level_init, envs.action_space.sample()),
+        target_params=qf.init(qf1_key, obs_jug_init, init_gnn_latents, target_level_init, envs.action_space.sample()),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
     qf2_state = TrainState.create(
         apply_fn=qf.apply,
-        params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
-        target_params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, envs.action_space.sample()),
+        params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, target_level_init, envs.action_space.sample()),
+        target_params=qf.init(qf2_key, obs_jug_init, init_gnn_latents, target_level_init, envs.action_space.sample()),
         tx=optax.adam(learning_rate=args.learning_rate),
     )
     actor.apply = jax.jit(actor.apply)
@@ -1095,9 +1103,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_state: TrainState,
         obs_jug: jnp.ndarray,           # <-- Neu
         gnn_latents: jnp.ndarray,       # <-- Neu
+        target_level: jnp.ndarray,
         actions: np.ndarray,
         next_jug: jnp.ndarray,          # <-- Neu
         next_gnn_latents: jnp.ndarray,  # <-- Neu
+        next_target_level: jnp.ndarray,
         rewards: np.ndarray,
         terminations: np.ndarray,
         key: jnp.ndarray,
@@ -1107,17 +1117,17 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # HIER KEIN GNN MEHR AUFRUFEN! Einfach direkt die übergebenen Variablen nutzen:
         clipped_noise = jnp.clip((jax.random.normal(noise_key, actions.shape) * args.policy_noise), -args.noise_clip, args.noise_clip) * actor.action_scale
         next_state_actions = jnp.clip(
-            actor.apply(actor_state.target_params, next_jug, next_gnn_latents) + clipped_noise,
+            actor.apply(actor_state.target_params, next_jug, next_gnn_latents, next_target_level) + clipped_noise,
             envs.single_action_space.low, envs.single_action_space.high
         )
 
-        qf1_next_target = qf.apply(qf1_state.target_params, next_jug, next_gnn_latents, next_state_actions).reshape(-1)
-        qf2_next_target = qf.apply(qf2_state.target_params, next_jug, next_gnn_latents, next_state_actions).reshape(-1)
+        qf1_next_target = qf.apply(qf1_state.target_params, next_jug, next_gnn_latents, next_target_level, next_state_actions).reshape(-1)
+        qf2_next_target = qf.apply(qf2_state.target_params, next_jug, next_gnn_latents, next_target_level, next_state_actions).reshape(-1)
         min_qf_next_target = jnp.minimum(qf1_next_target, qf2_next_target)
         next_q_value = (rewards + (1 - terminations) * args.gamma * (min_qf_next_target)).reshape(-1)
 
         def mse_loss(params):
-            qf_a_values = qf.apply(params, obs_jug, gnn_latents, actions).squeeze()
+            qf_a_values = qf.apply(params, obs_jug, gnn_latents, target_level, actions).squeeze()
             return ((qf_a_values - next_q_value) ** 2).mean(), qf_a_values.mean()
 
         (qf1_loss_value, qf1_a_values), grads1 = jax.value_and_grad(mse_loss, has_aux=True)(qf1_state.params)
@@ -1135,11 +1145,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         qf2_state: TrainState,
         obs_jug: jnp.ndarray,     # <-- Neu
         gnn_latents: jnp.ndarray, # <-- Neu
+        target_level: jnp.ndarray, # <-- Neu
     ):
         # HIER EBENFALLS KEIN GNN MEHR!
         def actor_loss(params):
-            actions = actor.apply(params, obs_jug, gnn_latents)
-            return -qf.apply(qf1_state.params, obs_jug, gnn_latents, actions).mean()
+            actions = actor.apply(params, obs_jug, gnn_latents, target_level)
+            return -qf.apply(qf1_state.params, obs_jug, gnn_latents, target_level, actions).mean()
 
         actor_loss_value, grads = jax.value_and_grad(actor_loss)(actor_state.params)
         actor_state = actor_state.apply_gradients(grads=grads)
@@ -1165,9 +1176,9 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             
             # deterministic action from actor
             # signal-independent exploration noise 
-            obs_jug, obs_jug_buf, obs_pt_buf = unpack_obs(jnp.array(obs))
-            gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
-            actions_det = actor.apply(actor_state.params, obs_jug, gnn_latents)
+            obs_jug, obs_jug_buf, obs_pt_buf, target_level = unpack_obs(jnp.array(obs))
+            gnn_latents, obs_jug = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
+            actions_det = actor.apply(actor_state.params, obs_jug, gnn_latents, target_level)
             actions_det = np.array(jax.device_get(actions_det))
 
             expl_noise = np.random.normal(0, max_action * args.exploration_noise, size=envs.single_action_space.shape)
@@ -1297,12 +1308,12 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             # --- NEU: Beobachtungen entpacken und GNN anwenden ---
             # 1. Aktuelle Beobachtungen entpacken und Latents berechnen
-            obs_jug, obs_jug_buf, obs_pt_buf = unpack_obs(obs_batch)
-            gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
+            obs_jug, obs_jug_buf, obs_pt_buf, target_level = unpack_obs(obs_batch)
+            gnn_latents, obs_jug = jax.lax.stop_gradient(batched_gnn_forward(obs_jug_buf, obs_pt_buf))
             
             # 2. Nächste Beobachtungen entpacken und Latents berechnen
-            next_jug, next_jug_buf, next_pt_buf = unpack_obs(next_obs_batch)
-            next_gnn_latents = jax.lax.stop_gradient(batched_gnn_forward(next_jug_buf, next_pt_buf))
+            next_jug, next_jug_buf, next_pt_buf, next_target_level = unpack_obs(next_obs_batch)
+            next_gnn_latents, next_jug = jax.lax.stop_gradient(batched_gnn_forward(next_jug_buf, next_pt_buf))
             # -----------------------------------------------------
 
             # --- 3. Den Critic updaten ---
@@ -1313,8 +1324,10 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 obs_jug,             # Nutzt den isolierten Krug-Zustand
                 gnn_latents,         # Nutzt die vorberechneten GNN-Latents
                 actions_batch, 
+                target_level,
                 next_jug,            # Nächster Krug-Zustand
                 next_gnn_latents,    # Nächste GNN-Latents
+                next_target_level,
                 rewards_batch, 
                 dones_batch, 
                 key
@@ -1327,7 +1340,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     qf1_state, 
                     qf2_state, 
                     obs_jug,         # Wir recyclen die Krug-Daten...
-                    gnn_latents      # ...und die GNN-Latents! (Das spart massiv Zeit)
+                    gnn_latents,      # ...und die GNN-Latents! (Das spart massiv Zeit)
+                    target_level
                 )
 
             if global_step % 100 == 0:

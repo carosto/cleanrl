@@ -978,6 +978,22 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 print("step time: ", time.time() - start_time_step)
                 writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
                 writer.add_scalar("charts/step_time", time.time() - start_time_step, global_step)
+        if args.save_model:
+            step_20_percent = int(args.total_timesteps * 0.2)
+            step_60_percent = int(args.total_timesteps * 0.6)
+            if global_step in (0, step_20_percent, step_60_percent):
+                model_path = f"{runs_folder}/{args.exp_name}_{global_step}.cleanrl_model"
+                with open(model_path, "wb") as f:
+                    f.write(
+                        flax.serialization.to_bytes(
+                            [
+                                actor_state.params,
+                                qf1_state.params,
+                                qf2_state.params,
+                            ]
+                        )
+                    )
+                print(f"model saved to {model_path} at step {global_step}")
     envs.close()# moved up here to make sure that there is no conflict with make_env in eval
     if args.save_model:
         model_path = f"{runs_folder}/{args.exp_name}.cleanrl_model"
@@ -996,22 +1012,25 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         eval_rewards_folder = os.path.abspath(f"{args.output_dir}/saved_rewards")
 
-        episodic_returns = evaluate(
-            model_path,
-            make_env,
-            args.env_id,
-            eval_episodes=20,
-            run_name=f"{run_name}-eval",
-            Model=(Actor, QNetwork),
-            exploration_noise=args.exploration_noise,
-            signal_noise=args.signal_noise,
-            min_signal_noise=args.min_signal_noise,
-            max_signal_noise=args.max_signal_noise,
-            env_kwargs=env_kwargs,
-            video_folder=video_folder,
-            rewards_folder=eval_rewards_folder)
-        for idx, episodic_return in enumerate(episodic_returns):
-            writer.add_scalar("eval/episodic_return", episodic_return, idx)
+        fill_targets = [0.25 + 0.1 * i for i in range(7)]
+        for current_fill_target in fill_targets:
+            env_kwargs["reward_weights"]["fill_target_level"] = current_fill_target
+            episodic_returns = evaluate(
+                model_path,
+                make_env,
+                args.env_id,
+                eval_episodes=10,
+                run_name=f"{run_name}-eval_2_{current_fill_target}",
+                Model=(Actor, QNetwork),
+                exploration_noise=args.exploration_noise,
+                signal_noise=args.signal_noise,
+                min_signal_noise=args.min_signal_noise,
+                max_signal_noise=args.max_signal_noise,
+                env_kwargs=env_kwargs,
+                video_folder=video_folder,
+                rewards_folder=eval_rewards_folder)
+            for idx, episodic_return in enumerate(episodic_returns):
+                writer.add_scalar(f"eval/episodic_return_{current_fill_target}", episodic_return, idx)
 
         if args.upload_model:
             from cleanrl_utils.huggingface import push_to_hub

@@ -240,12 +240,12 @@ if __name__ == "__main__":
     fill_targets = [0.25 + 0.1 * i for i in range(7)]
 
     with open("/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/test.txt", "r") as f:#test_diff_action_costs.txt
-        runs_ids = [line.strip().split("__")[-1] for line in f]
+        runs_ids = [line.strip().split("__")[-2:] for line in f]
 
     for current_fill_target in fill_targets:
-        for run_nr in runs_ids:
+        for seed, run_nr in runs_ids:
         #run_nr = "1773629276_bc85d2"
-            run_name= f"PouringEnvIsaac-v0__td3_continuous_action_jax__42__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
+            run_name= f"PouringEnvIsaac-v0__td3_continuous_action_jax__{seed}__{run_nr}"#f"PouringEnv-v0__td3_continuous_action_jax__42__{run_nr}"
 
             #run_name = "PouringEnvIsaacVisual-v0__td3_continuous_action_jax__42__1761689808_403a80"
             #model_path = os.path.join("/home/carola/masterthesis/cleanrl/cleanrl/outputs/runs", run_name, "td3_continuous_action_jax_42.cleanrl_model")    
@@ -284,7 +284,7 @@ if __name__ == "__main__":
                 make_env,
                 hyperparams["env_id"],
                 eval_episodes=10,
-                run_name=f"{run_name}-eval_2_{current_fill_target}",
+                run_name=f"{run_name}-eval_3_{current_fill_target}",
                 Model=(Actor, QNetwork),
                 exploration_noise=0,#hyperparams["exploration_noise"],
                 signal_noise=hyperparams["signal_noise"],

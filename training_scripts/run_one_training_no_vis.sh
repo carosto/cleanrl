@@ -7,6 +7,8 @@ SEED=42
 SAVE_MODEL="--save-model"
 BUFFER_SIZE=50000
 TOTAL_TIMESTEPS=500000
+LEARNING_STARTS=25000
+BATCH_SIZE=256
 CAPTURE_VIDEO="--capture_video"
 OUTPUT_DIR="/home/carola/masterthesis/cleanrl/cleanrl/outputs/"
 
@@ -15,7 +17,7 @@ TARGET_LEVEL_WGT=1.0
 PT_CUP_WGT=15
 PT_FLOW_WGT=0
 PT_SPILL_WGT=-600
-ACTION_COST=-0.01
+ACTION_COST=-100
 JUG_RESTING_WGT=-0.0000001
 JUG_VELOCITY_WGT=0
 DISTANCE_WGT=0
@@ -28,8 +30,8 @@ EXPLORATION_NOISE=0.1
 #EXPLORATION_WARMUP_STEPS=0
 #FOVEA_RADIUS=50
 
-SIGNAL_NOISE=1.0
-MIN_SIGNAL_NOISE=0.00
+SIGNAL_NOISE=0
+MIN_SIGNAL_NOISE=0
 MAX_SIGNAL_NOISE=1000
 
 TIME_PENALTY=0
@@ -43,6 +45,8 @@ $PYTHON_CMD \
   $SAVE_MODEL \
   --buffer_size $BUFFER_SIZE \
   --total_timesteps $TOTAL_TIMESTEPS \
+  --learning_starts $LEARNING_STARTS \
+  --batch_size $BATCH_SIZE \
   $CAPTURE_VIDEO \
   --output-dir $OUTPUT_DIR \
   --target_level_wgt $TARGET_LEVEL_WGT \
@@ -59,7 +63,3 @@ $PYTHON_CMD \
   --min_signal_noise $MIN_SIGNAL_NOISE \
   --max_signal_noise $MAX_SIGNAL_NOISE \
   --time_penalty $TIME_PENALTY \
-  #--initial_exploration_noise $INITIAL_EXPLORATION_NOISE \
-  #--min_exploration_noise $MIN_EXPLORATION_NOISE \
-  #--max_exploration_noise $MAX_EXPLORATION_NOISE \
-  #--exploration_warmup_steps $EXPLORATION_WARMUP_STEPS \

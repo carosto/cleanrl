@@ -1,3 +1,5 @@
+# This repository contains my version of the CleanRL implementation for TD3 with JAX that I used for my master thesis on pouring in RL (go here for the [environment implementation](https://github.com/carosto/pouring_env).
+
 # CleanRL (Clean Implementation of RL Algorithms)
 
 

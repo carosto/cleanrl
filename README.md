@@ -7,7 +7,7 @@ The following files are relevant for my project:
 - cleanrl/td3_continuous_action_jax.py (the main training script)
 - cleanrl_utils/evals/td3_jax_eval.py (the evaluation script)
 - folder 'training_scripts' contains bash files to run the training script with specified settings
-- /home/carola/masterthesis/cleanrl/cleanrl/td3_continuous_action_jax_42.py (a version of the training script modified to run on the 42 server but not up to date with the current training script)
+- cleanrl/td3_continuous_action_jax_42.py (a version of the training script modified to run on the 42 server but not up to date with the current training script)
 
 
 # CleanRL (Clean Implementation of RL Algorithms)

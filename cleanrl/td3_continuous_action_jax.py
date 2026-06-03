@@ -5,9 +5,6 @@ import random
 import time
 from dataclasses import dataclass
 
-"""# Add the parent directory (root) to the Python path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))"""
-
 import gymnasium as gym
 import learning_to_simulate_pouring.register_env  # this triggers the registration
 
@@ -24,8 +21,6 @@ from flax.training.train_state import TrainState
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
 import json
-
-
 
 @dataclass
 class Args:
@@ -183,13 +178,14 @@ class JugEncoder(nn.Module):
 
 class ParticleEncoder(nn.Module):
     @nn.compact
-    def __call__(self, particles):  # particles shape: (batch, 1048, 128)
-        x = nn.Dense(64)(particles)       # (batch, 1048, 64)
+    def __call__(self, particles):  
+        # particles shape: (batch, num_particles, 9)
+        x = nn.Dense(64)(particles)       
         x = nn.relu(x)
-        x = nn.Dense(64)(x)               # (batch, 1048, 64)
+        x = nn.Dense(64)(x)               
         x = nn.relu(x)
-        x = jnp.mean(x, axis=1)           # mean pool over particles → (batch, 64)
-        return x
+        x = jnp.mean(x, axis=1)        
+        return x # (batch, 64)
     
 # Image + Gaze Encoder
 class ImageGazeEncoder(nn.Module):
@@ -204,7 +200,6 @@ class ImageGazeEncoder(nn.Module):
         batch_size, flat_dim = img.shape
         x = img.reshape((batch_size, 64, 64, 1))
 
-        # Efficient CNN
         x = nn.Conv(16, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
         x = nn.relu(x)
         x = nn.Conv(32, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
@@ -212,10 +207,10 @@ class ImageGazeEncoder(nn.Module):
         x = nn.Conv(64, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
         x = nn.relu(x)
 
-        # Global average pooling
+        # global average pooling
         x = jnp.mean(x, axis=(1, 2))  # (batch, 64)
 
-        # Combine with gaze
+        # combine with gaze
         x = jnp.concatenate([x, gaze], axis=-1)
         x = nn.Dense(128)(x)
         x = nn.relu(x)
@@ -233,7 +228,6 @@ class ImageEncoder(nn.Module):
         batch_size, flat_dim = img.shape
         x = img.reshape((batch_size, 64, 64, 1))
 
-        # Efficient CNN
         x = nn.Conv(16, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
         x = nn.relu(x)
         x = nn.Conv(32, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
@@ -241,10 +235,10 @@ class ImageEncoder(nn.Module):
         x = nn.Conv(64, kernel_size=(3, 3), strides=(2, 2), padding='SAME')(x)
         x = nn.relu(x)
 
-        # Global average pooling
+        # global average pooling
         x = jnp.mean(x, axis=(1, 2))  # (batch, 64)
 
-        # Combine with gaze
+        # combine with gaze
         x = jnp.concatenate([x], axis=-1)
         x = nn.Dense(128)(x)
         x = nn.relu(x)
@@ -261,7 +255,7 @@ class ImageEncoderMultiple(nn.Module):
         """
 
         batch_size, flat_dim = img.shape
-        x = img.reshape((batch_size, 64, 64, self.num_frames))  # ← key change
+        x = img.reshape((batch_size, 64, 64, self.num_frames)) 
 
         # CNN
         x = nn.Conv(32, (3, 3), strides=(2, 2), padding='SAME')(x)
@@ -273,7 +267,7 @@ class ImageEncoderMultiple(nn.Module):
         x = nn.Conv(128, (3, 3), strides=(2, 2), padding='SAME')(x)
         x = nn.relu(x)
 
-        # Global average pooling
+        # global average pooling
         x = jnp.mean(x, axis=(1, 2))
 
         x = nn.Dense(128)(x)
@@ -294,7 +288,7 @@ class ImageEncoderMultiple3D(nn.Module):
         H = 64
         W = 64
 
-        # Reshape to (batch, time, height, width, channels)
+        # reshape to (batch, time, height, width, channels)
         x = img.reshape((batch_size, self.num_frames, H, W, 1))
 
         # 3D CNN layers (time × space)
@@ -322,7 +316,7 @@ class ImageEncoderMultiple3D(nn.Module):
         )(x)
         x = nn.relu(x)
 
-        # Global average pooling over time + space
+        # global average pooling over time + space
         x = jnp.mean(x, axis=(1, 2, 3))  # (batch, features)
 
         x = nn.Dense(128)(x)
@@ -865,32 +859,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             # Execution noise
             execution_noise = actions_exec - actions_det
-            """if global_step < args.learning_starts + args.exploration_warmup_steps:
-                # Signal-INDEPENDENT noise during warmup
-                noise = np.random.normal(
-                    loc=0.0,
-                    scale=args.initial_exploration_noise,
-                    size=actions_det.shape,
-                )
-            else:
-                # Signal-DEPENDENT noise after warmup
-                noise_scale = (
-                    args.min_exploration_noise
-                    + args.exploration_noise * np.abs(actions_det)#np.sqrt(np.abs(actions_det))
-                )
-
-                # Clip noise scale for stability
-                noise_scale = np.clip(
-                    noise_scale,
-                    args.min_exploration_noise,
-                    args.max_exploration_noise,
-                )
-
-                noise = np.random.normal(
-                    loc=0.0,
-                    scale=noise_scale,
-                    size=actions_det.shape,
-                )"""
 
             actions = actions_det + expl_noise + execution_noise
 

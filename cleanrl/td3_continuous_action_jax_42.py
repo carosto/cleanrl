@@ -222,35 +222,6 @@ class QNetwork(nn.Module):
         return x
 
 
-"""class QNetwork(nn.Module):
-    @nn.compact
-    def __call__(self, x: jnp.ndarray, a: jnp.ndarray):
-        x = jnp.concatenate([x, a], -1)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(1)(x)
-        return x
-
-
-class Actor(nn.Module):
-    action_dim: int
-    action_scale: jnp.ndarray
-    action_bias: jnp.ndarray
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        x = nn.Dense(self.action_dim)(x)
-        x = nn.tanh(x)
-        x = x * self.action_scale + self.action_bias
-        return x"""
-
-
 class TrainState(TrainState):
     target_params: flax.core.FrozenDict
 

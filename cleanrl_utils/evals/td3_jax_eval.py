@@ -33,8 +33,6 @@ def evaluate(
     max_action = float(envs.single_action_space.high[0])
     obs, _ = envs.reset()
 
-    #np.savez(f"{rewards_folder}/{run_name}/reset_init_particle_positions.npz", infos["particle_positions"])
-
     Actor, QNetwork = Model
     action_scale = np.array((envs.action_space.high - envs.action_space.low) / 2.0)
     action_bias = np.array((envs.action_space.high + envs.action_space.low) / 2.0)
@@ -56,16 +54,6 @@ def evaluate(
     # note: qf1_params and qf2_params are not used in this script
     actor.apply = jax.jit(actor.apply)
     qf.apply = jax.jit(qf.apply)
-
-    """def print_shapes(tree):
-        for k, v in tree.items():
-            if isinstance(v, dict) or hasattr(v, "keys"):
-                print(f"{k}:")
-                print_shapes(v)
-            else:
-                print(f"{k}: {v.shape}")
-
-    print_shapes(unfreeze(actor_params))"""
 
     episodic_returns = []
     rewards_per_episode = []
@@ -108,12 +96,11 @@ def evaluate(
             size=actions_det.shape,
         )
         """
-        # Signal-dependent log-normal motor noise (biologically inspired)
-        # Sample multiplicative log-noise
+        # Signal-dependent log-normal noise
         epsilon = np.abs(np.random.normal(0.0, noise_scale, actions_det.shape))
         actions_exec = actions_det * (1.0 + epsilon)
 
-        # Execution noise (if you still want it separated)
+        # Execution noise 
         execution_noise = actions_exec - actions_det
 
         actions = actions_det + expl_noise + execution_noise
@@ -122,42 +109,6 @@ def evaluate(
             envs.single_action_space.low,
             envs.single_action_space.high,
         )
-        """# Signal-DEPENDENT noise after warmup
-        noise_scale = (
-            min_exploration_noise
-            + exploration_noise * np.abs(actions)#np.sqrt(np.abs(actions_det))
-        )
-
-        # Clip noise scale for stability
-        noise_scale = np.clip(
-            noise_scale,
-            min_exploration_noise,
-            max_exploration_noise,
-        )
-
-        noise = np.random.normal(
-            loc=0.0,
-            scale=noise_scale,
-            size=actions.shape,
-        )
-
-        actions = actions + noise
-
-        actions = np.array(
-            [
-                actions.clip(
-                    envs.single_action_space.low,
-                    envs.single_action_space.high)
-            ]
-        )"""
-        """actions = np.array(
-            [
-                (
-                    jax.device_get(actions)[0]
-                    + np.random.normal(0, max_action * exploration_noise, size=envs.single_action_space.shape)
-                ).clip(envs.single_action_space.low, envs.single_action_space.high)
-            ]
-        )"""
 
         # CHANGED: original version used final_info to detect done which was removed in gymnasium 1.0.0
         next_obs, rewards, terminated, truncated, infos = envs.step(actions)
@@ -168,8 +119,6 @@ def evaluate(
         jug_flow_rates_per_episode.append(infos['jug_flow_rate'][0])
         actions_per_episode.append(actions[0])
 
-        """if infos["step_id"][0] == 2:
-            np.savez(f"{rewards_folder}/{run_name}/episodes_{len(episodic_returns)}_particles_first_step.npz", infos["particle_positions"][0])"""
 
         data_trial = {key : value[0] for key, value in infos.items() if ("episode" not in key) and (key[0] != "_")}
         data_trial["reward"] = rewards[0]
@@ -236,10 +185,9 @@ if __name__ == "__main__":
     from cleanrl.td3_continuous_action_jax import Actor, QNetwork, make_env
     import json
 
-    #fill_targets = [x / 10 for x in range(2, 10)] # 0.2 to 0.9 in 0.1 increments
     fill_targets = [0.25 + 0.1 * i for i in range(7)]
 
-    with open("/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/test.txt", "r") as f:#test_diff_action_costs.txt
+    with open("/home/carola/masterthesis/pouring_env/learning_to_simulate_pouring/test.txt", "r") as f:
         runs_ids = [line.strip().split("__")[-2:] for line in f]
 
     for current_fill_target in fill_targets:

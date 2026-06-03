@@ -1,6 +1,15 @@
 # This repository contains my version of the CleanRL implementation for TD3 with JAX that I used for my master thesis on pouring in RL 
 For specific information on installing this version, go here for the [environment implementation](https://github.com/carosto/pouring_env) and the relevant installation instructions. 
 
+Most of the repository is in its original state, I only modified the files relevant for TD3 with JAX.
+
+The following files are relevant for my project:
+- cleanrl/td3_continuous_action_jax.py (the main training script)
+- cleanrl_utils/evals/td3_jax_eval.py (the evaluation script)
+- folder 'training_scripts' contains bash files to run the training script with specified settings
+- /home/carola/masterthesis/cleanrl/cleanrl/td3_continuous_action_jax_42.py (a version of the training script modified to run on the 42 server but not up to date with the current training script)
+
+
 # CleanRL (Clean Implementation of RL Algorithms)
 
 
